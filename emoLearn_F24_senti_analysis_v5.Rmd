@@ -1,0 +1,4947 @@
+---
+title: "emoLearn_F24_senti_analysis"
+author: "Runan Wang"
+date: "2026-02-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(afex)
+library(emmeans)
+library(knitr)
+library(tidyverse)
+library(compute.es)
+library(car)
+library(ggplot2)
+library(multcomp)
+library(pastecs)
+library(WRS2)
+library(Hmisc)
+library(tidyverse)
+library(SuppDists)
+library(ggpubr)
+library(readxl)
+library(ez)
+library(lme4)
+library(dplyr)
+library(corrplot)
+library(psych)
+library(ggpubr) # for Q plot (normality check)
+library(openxlsx)
+library(colorspace)
+library(ggrepel)
+library(directlabels)
+library(ggplot2)
+library(reshape2)
+library(plyr)
+library(scales)
+library(wesanderson)
+library(brms)
+library(stringr)
+library(performance)
+library(see)
+library(tidyr)
+library(lubridate)
+library(tibble)
+library(bayesplot)
+library(janitor)
+library(sjPlot)
+`select` <- dplyr::select
+`recode` <- dplyr::recode
+`summarise` <- dplyr::summarise
+`describe` <- psych::describe
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Load in BERT sentiment file
+I didn't test the accordance between chatGPT and bert models. I deleted the section fo code that test it, if I want to add them back later, see emoLearn_F24_senti_analysis.Rmd.
+Colnames:
+df_senti_full: contain API label, sentiment analysis from roberta, disilBERT, emoRoberta, and go_emoRoberta
+***Roberta***: 
+phrase_valCat_main: NEGATIVE, NEUTRAL, POSITIVE
+
+***distilBERT***
+phrase_distl_main: joy, enger, sadness, fear, love, suprise
+
+***emoRoberta***
+phrase_emo_main
+***go_emoRoberta***
+phrase_go_emo_mai
+```{r cars}
+df_senti_full <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/emaData_F24_phrase_sentiment_v5.csv")
+# It wierd that there is a cate as "-0.5", I think it is mixed too.
+df_senti_full <- df_senti_full %>% mutate(api_val_num = api_val)
+df_senti_full <- df_senti_full %>% mutate(api_val = (case_when(api_val == 1.0 ~"POSITIVE",
+                                                               api_val == 0.5 ~ "MIXED",
+                                                               api_val == -0.5 ~ "MIXED",
+                                                               api_val == 0 ~ "NEUTRAL",
+                                                               api_val == -1 ~ "NEGATIVE")
+  
+))
+# df_response_full <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/processed/EMA_API_response_sentiment.csv")
+```
+```{r}
+df_senti_full <- df_senti_full %>% mutate(label_api_text = case_when(label_api == -1 ~ "Expression",
+                                                           label_api == 0 ~ "Neither",
+                                                           label_api == 1 ~ "Regulation"))
+```
+
+```{r}
+df_mood <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/processed/premedEMA_exit_mood_final.csv")
+```
+
+```{r cars}
+df_PE <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/premedEMA_f2024_predictors_df.csv")
+colnames(df_PE)[1] = "ID"
+# drop the wrong grade
+df_PE <- df_PE %>% filter(shown_wrong !="1")
+```
+
+## Chat_GPT
+```{r}
+gpt_label_count <- df_senti_full %>%
+  dplyr::count(api_val)
+
+ggplot(gpt_label_count, aes(x=api_val, y = n, fill = api_val)) +
+  geom_bar(stat = "identity") +
+  labs(title = "chatGPT label frequency", x = "Valence", y = "Count") +
+  scale_x_discrete(guide = guide_axis(angle = 45))+
+  theme_classic()
+```
+
+## Collapsed
+
+```{r}
+library(dplyr)
+library(tibble)
+
+collapse_text_by_label <- function(label_api_text, api_senti) {
+  r <- rle(label_api_text)
+  block_id <- rep(seq_along(r$lengths), r$lengths)
+
+  tibble(
+    block_id = block_id,
+    label_api_text = label_api_text,
+    api_senti = api_senti
+  ) %>%
+    group_by(block_id) %>%
+    summarise(
+      text_type = first(label_api_text),
+      length = n(),
+      score_sum = sum(api_senti),
+      score_avg = mean(api_senti),
+      score_peak = api_senti[which.max(abs(api_senti))],
+      score_end = last(api_senti),
+      score_lead = first(api_senti),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      block_sentiment = case_when(
+        score_avg > 0 ~ "POSITIVE",
+        score_avg < 0 ~ "NEGATIVE",
+        TRUE ~ "NEUTRAL"
+      )
+    )
+}
+
+```
+
+```{r}
+library(dplyr)
+library(tibble)
+
+collapse_text_by_label_ratio <- function(label_api_text, api_senti) {
+  r <- rle(label_api_text)
+  block_id <- rep(seq_along(r$lengths), r$lengths)
+
+  tibble(
+    block_id = block_id,
+    label_api_text = label_api_text,
+    api_senti = api_senti
+  ) %>%
+    group_by(block_id) %>%
+    summarise(
+      text_type = first(label_api_text),
+      length = n(),
+      exp_sum = sum(exp_word),
+      nei_sum = sum(nei_word),
+      reg_sum = sum(reg_word),
+      total_sum = sum(total_word),
+      .groups = "drop"
+    )
+}
+
+```
+
+
+```{r}
+# df_senti_full <- df_senti_full %>% mutate(api_val_num = case_when(api_val == "POSITIVE" ~ 1,
+#                                                                   api_val == "NEUTRAL" ~ 0,
+#                                                                   api_val == "MIXED" ~ 0.5,
+#                                                                   api_val == "NEGATIVE" ~ -1))
+```
+
+```{r}
+df_senti_full <- df_senti_full %>% mutate(api_senti_score = api_val_num * api_intensity)
+```
+
+
+```{r}
+df_senti_full_collapsed <- df_senti_full %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  summarise(blocks = list(collapse_text_by_label(label_api_text, api_senti_score)), .groups = "drop") %>%
+  tidyr::unnest(blocks)
+```
+
+
+```{r}
+df_transitions_reg <- df_senti_full_collapsed %>%
+  mutate(prev_sentiment = lag(block_sentiment),
+         next_sentiment = lead(block_sentiment)) %>% filter(text_type == "Regulation") %>%
+  dplyr::count(prev_sentiment, block_sentiment, next_sentiment)
+
+df_transitions_reg <- df_transitions_reg %>%
+  dplyr::mutate(
+    prev_sentiment = toupper(prev_sentiment),
+    block_sentiment = toupper(block_sentiment),
+    next_sentiment = toupper(next_sentiment)
+  )
+```
+```{r}
+library(networkD3)
+#Work on it later
+#library(ggsankey)
+# Prepare nodes and links
+nodes <- data.frame(name = unique(c(df_transitions_reg$prev_sentiment,
+                                    df_transitions_reg$block_sentiment,
+                                    df_transitions_reg$next_sentiment)))
+df_tmp <- df_transitions_reg[,1:3]
+df_tmp_long <- df_tmp %>% make_long(prev_sentiment, next_sentiment)
+
+plot_sankey_reg <- ggplot(df_tmp_long, aes(x = x,
+                               next_x = next_x,
+                               node = node,
+                               next_node = next_node,
+                               fill = factor(node))) +
+  theme_classic()
+plot_sankey_reg + geom_sankey(flow.alpha = 0.5,
+                   node.color = "black",
+                   show.legend = TRUE)
+plot_sankey_reg
+# Create link table
+# links <- df_transitions_reg %>%
+#   dplyr::count(prev_sentiment, block_sentiment) %>%
+#   dplyr::rename(source = prev_sentiment, target = block_sentiment, value = n) %>%
+#   bind_rows(
+#     df_transitions_reg %>%
+#       dplyr::count(block_sentiment, next_sentiment) %>%
+#       dplyr::rename(source = block_sentiment, target = next_sentiment, value = n)
+#   ) %>%
+#   mutate(source = match(source, nodes$name) - 1,
+#          target = match(target, nodes$name) - 1)
+
+sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "source", Target = "target",
+              Value = "value", NodeID = "name",
+              fontSize = 12, nodeWidth = 30)
+
+```
+
+## Phrase-wise
+```{r}
+df_senti_full_single <- df_senti_full %>% group_by(ID, exam_num,ResponseNumber) %>% 
+  mutate(prev_senti = lag(api_val),
+         prev_intense = lag(api_intensity),
+         next_senti = lead(api_val),
+         next_intense = lead(api_intensity)) %>% ungroup()
+df_senti_full_single_reg <- df_senti_full_single %>% filter(label_api_text == "Regulation")
+
+```
+```{r}
+#library(ggsankey)
+labels <- c("prev_senti" = "before_reg_valence",
+            "api_val" = "regulation_valence",
+            "next_senti" = "after_reg_valence")
+df_tmp_single <- df_senti_full_single_reg %>% select(prev_senti, api_val,next_senti)
+df_senti_full_single_reg_long <- df_tmp_single %>% make_long(prev_senti, api_val, next_senti)
+
+plot_sankey_reg_single <- ggplot(df_senti_full_single_reg_long, aes(x = x,
+                               next_x = next_x,
+                               node = node,
+                               next_node = next_node,
+                               fill = factor(node))) +
+  scale_x_discrete(labels = labels) +
+  theme_classic()
+plot_sankey_reg_single + geom_sankey(flow.alpha = 0.5,
+                   node.color = "black",
+                   show.legend = TRUE)
+plot_sankey_reg_single
+```
+```{r}
+library(ggsankey)
+labels <- c("prev_senti" = "before_reg_valence",
+            "next_senti" = "after_reg_valence")
+df_tmp_single_pre_post <- df_senti_full_single_reg %>% select(prev_senti, next_senti)
+df_tmp_single_pre_post_long <- df_tmp_single_pre_post %>% make_long(prev_senti, next_senti)
+
+plot_sankey_pre_post_single <- ggplot(df_tmp_single_pre_post_long, aes(x = x,
+                               next_x = next_x,
+                               node = node,
+                               next_node = next_node,
+                               fill = factor(node))) +
+  scale_x_discrete(labels = labels) +
+  scale_fill_discrete(name = "Sentiemnt") + 
+  labs(x = "Text type",
+       title = "Sankey plot: Transition in sentiment before and after regulation") +
+  theme_classic()
+plot_sankey_pre_post_single + geom_sankey(flow.alpha = 0.5,
+                   node.color = "black",
+                   show.legend = TRUE)
+plot_sankey_pre_post_single
+```
+
+
+## Interactive sankey
+```{r}
+# library(dplyr)
+# df_links <- df_senti_full_single_reg_long %>%
+#   filter(!is.na(next_node)) %>%
+#   mutate(
+#     source_label = paste(node, x, sep = "_"),
+#     target_label = paste(next_node, next_x, sep = "_")
+#   )
+# 
+# df_link_counts <- df_links %>%
+#   dplyr::count(source_label, target_label, name = "value")
+# 
+# nodes <- data.frame(name = unique(c(df_link_counts$source_label, df_link_counts$target_label)))
+# 
+# links <- df_link_counts %>%
+#   dplyr::mutate(
+#     source = match(source_label, nodes$name) - 1,
+#     target = match(target_label, nodes$name) - 1
+#   ) %>%
+#   dplyr::count(source, target, name = "value")
+# 
+# library(networkD3)
+# 
+# sankeyNetwork(Links = links, Nodes = nodes,
+#               Source = "source", Target = "target",
+#               Value = "value", NodeID = "name",
+#               fontSize = 12, nodeWidth = 30)
+
+```
+# Modelling
+## sentiment change vs. text_type
+### phrase
+#### data prep
+```{r}
+library(dplyr)
+df_senti_score <- df_senti_full
+df_senti_score <- df_senti_score %>% dplyr::group_by(ID, exam_num, ResponseNumber) %>% dplyr::mutate(val_score_delta = lead(api_senti_score) - api_senti_score) %>% ungroup()
+# val_score_delta = lead(api_val_score): how does the sentiment change after current phrase. 
+# the more positive the score is, the sentiment became more positive after the current phrase
+```
+#### model
+##### valence~text_type
+```{r}
+df_senti_score_cat <- df_senti_score %>% dplyr::group_by(ID, exam_num, ResponseNumber) %>% dplyr::mutate(val_cat = lead(api_val))
+```
+valence(categorical) ~ text_type(categorical)
+```{r}
+m_cat_val_text_type <- brm(val_cat ~ label_api_text + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_text_type)
+```
+```{r}
+m_cat_val_curr_text_type <- brm(val_cat ~ label_api_text +api_val + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_curr_text_type)
+```
+
+
+#### Plot
+```{r}
+library(dplyr)
+library(brms)
+library(ggplot2)
+library(tidyr)
+
+df_senti_score_cat <- df_senti_score_cat %>%
+  mutate(
+    label_api_text = factor(
+      label_api_text,
+      levels = c("Expression", "Neither", "Regulation")
+    ),
+    val_cat = factor(val_cat)
+  )
+```
+```{r}
+m_cat_val_text_type <- brm(
+  val_cat ~ label_api_text +
+    (1 | ID) +
+    (1 | exam_num),
+  family = categorical(),
+  data = df_senti_score_cat
+)
+summary(m_cat_val_text_type)
+```
+```{r}
+ce_text_type <- conditional_effects(
+  m_cat_val_text_type,
+  effects = "label_api_text",
+  categorical = TRUE
+)
+
+p <- plot(
+  ce_text_type,
+  points = TRUE,
+  plot = FALSE
+)[[1]]
+class(p)
+```
+
+```{r}
+p_edit <- p +
+  labs(
+    x = "Phrase text category",
+    y = "Predicted probability",
+    color = "Valence",
+    fill = "Valence",
+    title = "Predicted valence by phrase category"
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Expression" = "Expression",
+      "Neither" = "Neither",
+      "Regulation" = "Regulation"
+    )
+  ) +
+  scale_fill_manual(values = c(
+  "NEGATIVE" = "#F8766D",
+  "POSITIVE" = "#C77CFF",
+    "MIXED"    = "#7CAE00",
+  "NEUTRAL"  = "#00BFC4"
+)) +
+  scale_y_continuous(
+    limits = c(0, 0.6),
+    breaks = seq(0, 1, 0.2),
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5
+    ),
+    
+    axis.text.x = element_text(
+      angle = 0,
+      hjust = 0.5
+    ),
+    legend.position = "right",
+    strip.background = element_blank(),
+  )
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/phrase_val_text_type.png",plot = p_edit, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/phrase_val_text_type.pdf",plot = p_edit, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/phrase_val_text_type.eps",plot = p_edit, width = 6, heigh = 4, dpi = 300)
+p_edit
+```
+```{r}
+library(brms)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Check the actual factor levels first
+levels(df_senti_score_cat$label_api_text)
+levels(df_senti_score_cat$val_cat)
+
+# Make one prediction row for each label_api_text category
+newdata <- data.frame(
+  label_api_text = levels(df_senti_score_cat$label_api_text)
+)
+
+# Posterior expected probabilities
+# Dimensions: posterior draws × label_api_text levels × val_cat categories
+epred <- posterior_epred(
+  m_cat_val_text_type,
+  newdata = newdata,
+  re_formula = NA
+)
+
+dim(epred)
+dimnames(epred)
+```
+```{r}
+levels(df_senti_score_cat$label_api_text)
+levels(df_senti_score_cat$val_cat)
+```
+
+```{r}
+posterior_summary(m_cat_val_text_type_cur)
+```
+```{r}
+df_senti_score_cat <- df_senti_score_cat %>%
+  mutate(
+    label_api_text = factor(
+      label_api_text,
+      levels = c("Expression", "Neither", "Regulation")
+    ),
+    val_cat = factor(val_cat)
+  )
+```
+```{r}
+df_senti_score_cat$val_cat <- relevel(df_senti_score_cat$val_cat, ref = "NEUTRAL")
+levels(df_senti_score_cat$val_cat)
+```
+#### ***final model***
+```{r}
+df_senti_score_cat$api_val<- as.factor(df_senti_score_cat$api_val)
+df_senti_score_cat$api_val <- relevel(df_senti_score_cat$api_val, ref = "NEGATIVE")
+df_senti_score_cat$val_cat <- as.factor(df_senti_score_cat$val_cat  )
+df_senti_score_cat$val_cat  <- relevel(df_senti_score_cat$val_cat , ref = "NEGATIVE")
+m_cat_val_text_type_neg_neg_ref <- brm(val_cat ~ label_api_text*api_val + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_text_type_neg_neg_ref)
+```
+```{r}
+df_senti_score_cat$api_val<- as.factor(df_senti_score_cat$api_val)
+df_senti_score_cat$api_val <- relevel(df_senti_score_cat$api_val, ref = "NEUTRAL")
+df_senti_score_cat$val_cat <- as.factor(df_senti_score_cat$val_cat  )
+df_senti_score_cat$val_cat  <- relevel(df_senti_score_cat$val_cat , ref = "NEUTRAL")
+m_cat_val_text_type_neu_neu_ref <- brm(val_cat ~ label_api_text*api_val + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_text_type_neu_neu_ref)a
+```
+```{r}
+#***final model***
+df_resp_senti_full <-read.csv("/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/ER/emaData_F24_senti_resp.csv")
+df_resp_senti_full$next_valence<- as.factor(df_resp_senti_full$next_valence)
+df_resp_senti_full$next_valence <- relevel(df_resp_senti_full$next_valence, ref = "NEGATIVE")
+levels(df_resp_senti_full$next_valence)
+df_resp_senti_full$api_val_text<- as.factor(df_resp_senti_full$api_val_text)
+df_resp_senti_full$api_val_text <- relevel(df_resp_senti_full$api_val_text, ref = "NEGATIVE")
+# for multiple responses exam
+brm_resp_reg_curr_val_neg_neg_ref <- brm(next_valence ~ reg_ratio*api_val_text + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+```
+
+
+```{r}
+summary(brm_resp_reg_curr_val_neg_neg_ref)
+```
+```{r}
+summary(brm_resp_reg_curr_val_ref_neu)
+```
+```{r}
+#***final model***
+df_resp_senti_full$next_valence <- relevel(df_resp_senti_full$next_valence, ref = "NEUTRAL")
+levels(df_resp_senti_full$next_valence)
+df_resp_senti_full$api_val_text<- as.factor(df_resp_senti_full$api_val_text)
+df_resp_senti_full$api_val_text <- relevel(df_resp_senti_full$api_val_text, ref = "NEUTRAL")
+levels(df_resp_senti_full$api_val_text)
+# for multiple responses exam
+brm_resp_reg_curr_val_neu_neu <- brm(next_valence ~ reg_ratio*api_val_text + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+summary(brm_resp_reg_curr_val_neu_neu)
+```
+
+
+```{r}
+df_senti_score_cat$val_cat <- relevel(df_senti_score_cat$val_cat, ref = "NEGATIVE")
+levels(df_senti_score_cat$val_cat)
+m_cat_val_text_type_neg_ref <- brm(val_cat ~ label_api_text*api_val + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_text_type_neg_ref)
+```
+```{r}
+df_resp_senti_full$next_valence <- relevel(df_resp_senti_full$next_valence, ref = "NEUTRAL")
+df_resp_senti_full$next_valence <- as.factor(df_resp_senti_full$next_valence)
+levels(df_resp_senti_full$next_valence)
+df_resp_senti_full$api_val_text <- relevel(df_resp_senti_full$api_val_text, ref = "MIXED")
+# for multiple responses exam
+brm_resp_reg_curr_val_ref_neu <- brm(next_valence ~ reg_ratio*api_val_text + (1|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+```
+```{r}
+summary(brm_resp_reg_curr_val_ref_neu)
+```
+
+```{r}
+# Check levels
+levels(df_resp_senti_full$next_valence)
+levels(df_resp_senti_full$api_val_text)
+
+# Cross-tabulation
+table(
+  df_resp_senti_full$api_val_text,
+  df_resp_senti_full$next_valence,
+  useNA = "ifany"
+)
+```
+
+```{r}
+table(df_resp_senti_full$next_valence)
+table(df_resp_senti_full$api_val_text)
+
+with(
+  df_resp_senti_full,
+  table(api_val_text, next_valence)
+)
+```
+
+
+```{r}
+levels(df_resp_senti_full$next_valence)
+# "NEUTRAL" "NEGATIVE" "MIXED" "POSITIVE"
+
+levels(df_resp_senti_full$api_val_text)
+# "MIXED" "NEGATIVE" "NEUTRAL" "POSITIVE"
+```
+
+```{r}
+summary(brm_resp_reg_curr_val_ref_neu)
+```
+
+```{r}
+summary(brm_resp_reg_curr_val_ref_neg)
+```
+
+```{r}
+m_cat_val_text_type_cur_add <- brm(val_cat ~ label_api_text+api_val + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_text_type_cur_add)
+```
+```{r}
+m_cat_val_text_type_cur_int <- brm(val_cat ~ label_api_text*api_val + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_text_type_cur_int)
+```
+```{r}
+ce_all <- conditional_effects(
+  m_cat_val_text_type_cur,
+  conditions = "label_api_text:api_val",
+  categorical = TRUE
+)
+
+ce_all[[1]]
+```
+```{r}
+ce_all
+```
+
+```{r}
+m_cat_val_text_type_cur_noref <- brm(val_cat ~ 0+label_api_text*api_val + (1|ID) + (1|exam_num), family = categorical(), data = df_senti_score_cat)
+summary(m_cat_val_text_type_cur_noref)
+```
+
+#### model comparison
+```{r}
+model1_phrase <- add_criterion(m_cat_val_text_type_neg_ref, "loo")
+model2_phrase <- add_criterion(m_cat_val_text_type_cur_add, "loo")
+model3_phrase <- add_criterion(m_cat_val_text_type_cur_int, "loo")
+
+model_comparison <- loo_compare(model1_phrase, model2_phrase,model3_phrase, criterion = "loo")
+print(model_comparison, simplify = FALSE)
+```
+
+```{r}
+m1_sentidelta_label <- lmer(val_score_delta ~ label_api_text + (1|exam_num) + (1|ResponseNumber)+ (1+label_api_text|ID), data = df_senti_score)
+summary(m1_sentidelta_label)
+```
+
+```{r}
+pp_check(m1_sentidelta_label)
+```
+
+```{r}
+# Only negative sentiment
+df_senti_score_neg <- df_senti_score %>% filter (api_val == "NEGATIVE")
+```
+```{r}
+m1_neg_sentidelta_label <- lmer(val_score_delta ~ label_api_text + 0+ (1|exam_num) + (1|ResponseNumber)+ (1+label_api_text|ID), data = df_senti_score_neg)
+summary(m1_neg_sentidelta_label)
+```
+```{r}
+pp_check(m1_neg_sentidelta_label)
+```
+### Phrase-level: next_valence ~ reg*curr_val*GAD_trait
+```{r}
+df_senti_score_cat_select <- df_senti_score_cat %>% select(ID, exam_num, ResponseNumber, Transcription, text,text_phrase, label_api, label_api_text, word_count, api_val, api_intensity,api_val_num, api_val_score, val_score_delta, val_cat)
+
+df_senti_score_cat_mood <- inner_join(df_senti_score_cat_select, df_mood, by = c("ID"))
+```
+
+```{r}
+df_senti_score_cat_mood$api_val <- as.factor(df_senti_score_cat_mood$api_val)
+df_senti_score_cat_mood$val_cat <- as.factor(df_senti_score_cat_mood$val_cat)
+levels(df_senti_score_cat_mood$val_cat)
+#m_cat_val_text_type_cur_GAD_score <- lmer(val_cat ~ 0+label_api_text*api_val*GAD_score + (1|ID) + (1|exam_num), data = df_senti_score_cat_mood)
+#summary(m_cat_val_text_type_cur_GAD_score)
+```
+```{r}
+m_cat_val_text_type_cur <- brm(
+  val_cat ~ label_api_text + api_val+ exam_num +
+    (1 | ID),
+  family = categorical(),
+  data = df_senti_score_cat_mood
+)
+summary(m_cat_val_text_type_cur)
+```
+
+
+```{r}
+m_cat_val_text_type_cur_GAD_score <- brm(
+  val_cat ~ label_api_text*api_val*GAD_score +
+    (1 | ID) +
+    (1 | exam_num),
+  family = categorical(),
+  data = df_senti_score_cat_mood
+)
+summary(m_cat_val_text_type_cur_GAD_score)
+```
+```{r}
+ce_all <- brms::conditional_effects(
+  m_cat_val_text_type_cur_GAD_score,
+  categorical = TRUE
+)
+
+names(ce_all)
+```
+
+
+```{r}
+library(brms)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Low and high GAD: 25th and 75th percentiles
+gad_values <- quantile(
+  df_senti_score_cat_mood$GAD_score,
+  probs = c(.25, .75),
+  na.rm = TRUE
+)
+
+# All combinations of phrase type, current valence, and GAD level
+newdata <- tidyr::expand_grid(
+  label_api_text = levels(df_senti_score_cat_mood$label_api_text),
+  api_val = levels(df_senti_score_cat_mood$api_val),
+  GAD_score = as.numeric(gad_values)
+)
+
+newdata$GAD_level <- factor(
+  newdata$GAD_score,
+  levels = as.numeric(gad_values),
+  labels = c("Low GAD", "High GAD")
+)
+
+epred <- posterior_epred(
+  m_cat_val_text_type_cur_GAD_score,
+  newdata = newdata,
+  re_formula = NA
+)
+
+dim(epred)
+
+outcome_levels <- dimnames(epred)[[3]]
+
+# Fallback if the array does not retain category names
+if (is.null(outcome_levels)) {
+  outcome_levels <- levels(df_senti_score_cat_mood$val_cat)
+}
+
+pred_df <- bind_rows(
+  lapply(seq_along(outcome_levels), function(k) {
+
+    data.frame(
+      newdata,
+      val_cat = outcome_levels[k],
+      estimate = apply(epred[, , k], 2, mean),
+      lower = apply(epred[, , k], 2, quantile, probs = .025),
+      upper = apply(epred[, , k], 2, quantile, probs = .975)
+    )
+  })
+)
+
+ggplot(
+  pred_df,
+  aes(
+    x = label_api_text,
+    y = estimate,
+    color = api_val,
+    group = api_val
+  )
+) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  facet_grid(val_cat ~ GAD_level) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    labels = scales::percent
+  ) +
+  labs(
+    x = "Phrase type",
+    y = "Predicted probability",
+    color = "Current valence"
+  ) +
+  theme_classic(base_size = 14)
+```
+```{r}
+m2_cat_val_text_type_cur_GAD_score <- brm(
+  val_cat ~ label_api_text*api_val*GAD_score +
+    (1 | ID),
+  family = categorical(),
+  data = df_senti_score_cat_mood
+)
+summary(m2_cat_val_text_type_cur_GAD_score)
+```
+#### Final: valence ~ regulation*GAD
+```{r}
+m3_cat_val_text_type_cur_GAD_score <- brm(val_cat ~ label_api_text*GAD_score+api_val + exam_num + (1|ID),
+                                          family = categorical(),
+                                          data = df_senti_score_cat_mood)
+summary(m3_cat_val_text_type_cur_GAD_score)
+```
+```{r}
+library(tidyr)
+
+newdata <- expand_grid(
+  label_api_text = "Regulation",
+  GAD_score = seq(
+    min(df_senti_score_cat_mood$GAD_score, na.rm = TRUE),
+    max(df_senti_score_cat_mood$GAD_score, na.rm = TRUE),
+    length.out = 100
+  ),
+  api_val = "NEGATIVE",      # or whichever reference level you prefer
+  exam_num = median(df_senti_score_cat_mood$exam_num)
+)
+
+epred <- posterior_epred(
+  m3_cat_val_text_type_cur_GAD_score,
+  newdata = newdata,
+  re_formula = NA
+)
+
+outcomes <- levels(df_senti_score_cat_mood$val_cat)
+
+pred_df <- bind_rows(
+  lapply(seq_along(outcomes), function(i){
+
+    data.frame(
+      GAD_score = newdata$GAD_score,
+      FutureValence = outcomes[i],
+      estimate = apply(epred[,,i],2,mean),
+      lower = apply(epred[,,i],2,quantile,.025),
+      upper = apply(epred[,,i],2,quantile,.975)
+    )
+
+  })
+)
+```
+```{r}
+dimnames(epred)[[3]]
+p_neg <- epred[, , "NEGATIVE"]
+p_neg
+
+pred_summary <- data.frame(
+  newdata,
+  estimate = apply(p_neg, 2, median),
+  lower = apply(p_neg, 2, quantile, probs = .025),
+  upper = apply(p_neg, 2, quantile, probs = .975)
+)
+
+pred_summary
+```
+
+```{r}
+library(ggplot2)
+
+plot_GAD_later_valence <- ggplot(
+  pred_df,
+  aes(
+    x = GAD_score,
+    y = estimate,
+    color = FutureValence,
+    fill = FutureValence
+  )
+) +
+  geom_line(size = 1.3) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = .18,
+    colour = NA
+  ) +
+  scale_color_manual(
+    values = c(
+      "NEGATIVE" = "#D55E00",
+      "NEUTRAL"  = "#666666",
+      "POSITIVE" = "#0072B2",
+      "MIXED" = "#83c5be"
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "NEGATIVE" = "#D55E00",
+      "NEUTRAL"  = "#666666",
+      "POSITIVE" = "#0072B2",
+      "MIXED" = "#83c5be"
+      
+    )
+  ) +
+  labs(
+    #title = "The predicted probability of later valence after regulation vs. GAD",
+    x = "GAD score",
+    y = "Predicted probability",
+    color = "Later valence",
+    fill = "Later valence"
+  ) +
+  theme_classic(base_size = 14)
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig6_valence_GAD.png",plot = plot_GAD_later_valence, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig6_valence_GAD.pdf",plot = plot_GAD_later_valence, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig6_valence_GAD.eps",plot = plot_GAD_later_valence, width = 6, heigh = 4, dpi = 300)
+```
+
+```{r}
+ggplot(
+  pred_df,
+  aes(
+    GAD_score,
+    estimate,
+    color = label_api_text,
+    fill = label_api_text
+  )
+) +
+  geom_line(size = 1.2) +
+  geom_ribbon(
+    aes(ymin = lower, ymax = upper),
+    alpha = .15,
+    color = NA
+  ) +
+  facet_wrap(~val_cat) +
+  labs(
+    y = "Predicted probability",
+    x = "GAD score",
+    color = "Current phrase",
+    fill = "Current phrase"
+  ) +
+  theme_classic(base_size = 14)
+```
+```{r}
+df_senti_score_cat_mood$val_cat <- relevel(
+  factor(df_senti_score_cat_mood$val_cat),
+  ref = "NEUTRAL"
+)
+m4_cat_val_text_type_cur_GAD_score_neuref <- brm(val_cat ~ label_api_text*GAD_score+api_val + exam_num + (1|ID),
+                                          family = categorical(),
+                                          data = df_senti_score_cat_mood)
+summary(m4_cat_val_text_type_cur_GAD_score_neuref)
+```
+```{r}
+library(tidyr)
+
+newdata <- expand_grid(
+  label_api_text = levels(df_senti_score_cat_mood$label_api_text),
+  GAD_score = seq(
+    min(df_senti_score_cat_mood$GAD_score, na.rm = TRUE),
+    max(df_senti_score_cat_mood$GAD_score, na.rm = TRUE),
+    length.out = 100
+  ),
+  api_val = "NEGATIVE",      # or whichever reference level you prefer
+  exam_num = median(df_senti_score_cat_mood$exam_num)
+)
+
+epred <- posterior_epred(
+  m4_cat_val_text_type_cur_GAD_score_neuref,
+  newdata = newdata,
+  re_formula = NA
+)
+
+outcomes <- levels(df_senti_score_cat_mood$val_cat)
+
+pred_df <- bind_rows(
+  lapply(seq_along(outcomes), function(i){
+
+    cbind(
+      newdata,
+      val_cat = outcomes[i],
+      estimate = apply(epred[,,i],2,mean),
+      lower = apply(epred[,,i],2,quantile,.025),
+      upper = apply(epred[,,i],2,quantile,.975)
+    )
+
+  })
+)
+```
+```{r}
+ggplot(
+  pred_df,
+  aes(
+    GAD_score,
+    estimate,
+    color = label_api_text,
+    fill = label_api_text
+  )
+) +
+  geom_line(size = 1.2) +
+  geom_ribbon(
+    aes(ymin = lower, ymax = upper),
+    alpha = .15,
+    color = NA
+  ) +
+  facet_wrap(~val_cat) +
+  labs(
+    y = "Predicted probability",
+    x = "GAD score",
+    color = "Current phrase",
+    fill = "Current phrase"
+  ) +
+  theme_classic(base_size = 14)
+```
+```{r}
+df_senti_score_cat_mood$val_cat <- relevel(
+  factor(df_senti_score_cat_mood$val_cat),
+  ref = "MIXED"
+)
+m4_cat_val_text_type_cur_GAD_score_mixref <- brm(val_cat ~ label_api_text*GAD_score+api_val + exam_num + (1|ID),
+                                          family = categorical(),
+                                          data = df_senti_score_cat_mood)
+summary(m4_cat_val_text_type_cur_GAD_score_mixref)
+```
+
+#### Phrase_leve: valence ~ PE
+```{r}
+df_senti_score_cat_select_PE <- inner_join(df_senti_score_cat_select, df_PE, by = c("ID","exam_num"))
+df_senti_score_cat_select_PE$api_val <- as.factor(df_senti_score_cat_select_PE$api_val)
+```
+```{r}
+m_phrase_val_PE <- brm(
+  val_cat ~ EVPE +
+    (1 | ID) +
+    (1 | exam_num),
+  family = categorical(),
+  data = df_senti_score_cat_select_PE
+)
+summary(m_phrase_val_PE)
+```
+####Plotting
+```{r}
+library(brms)
+library(ggplot2)
+
+ce <- conditional_effects(
+  m_phrase_val_PE,
+  effects = "EVPE",
+  categorical = TRUE
+)
+
+plot_df <- ce$EVPE
+
+head(plot_df)
+```
+```{r}
+names(plot_df)
+```
+```{r}
+ggplot(
+  plot_df,
+  aes(
+    x = EVPE,
+    y = estimate__,
+    color = cats__,
+    fill = cats__
+  )
+) +
+  geom_ribbon(
+    aes(ymin = lower__, ymax = upper__),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    x = "PE",
+    y = "Predicted Probability",
+    color = "Phrase Valence",
+    fill = "Phrase Valence",
+    title = "Effect of PE on Phrase Valence"
+  ) +
+  theme_classic()
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig3_phrase_valence_PE_titled.pdf", width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig3_phrase_valence_PE_titled.png", width = 6, heigh = 4, dpi = 300)
+```
+
+***Two-part modelling***
+```{r}
+mix <- mixture(gaussian(), gaussian())
+
+brm(
+  bf(val_score_delta ~ label_api_text + (1|exam_num)+ (1 | ID)),
+  data = df_senti_score,
+  family = mix,
+  chains = 4, cores = 4
+)
+```
+
+### collapsed phrase
+#### data prep: func to collapse and score blocks
+
+```{r}
+df_collapsed_senti_score <- df_senti_full_collapsed
+```
+
+```{r}
+df_collapsed_senti_score <- df_collapsed_senti_score %>% dplyr::group_by(ID, exam_num) %>% dplyr::mutate(
+       val_avg_delta = lead(score_avg) - score_avg,
+       val_peak_delta = lead(score_peak) - score_peak,
+       val_end_delta = lead(score_end) - score_end,
+       ) %>% ungroup()
+```
+
+#### model
+```{r}
+m1_avgdelta_collap_label <- lmer(val_avg_delta ~ text_type + 0+ (1|ResponseNumber)+ (1|exam_num) + (1|ID), data = df_collapsed_senti_score)
+summary(m1_avgdelta_collap_label)
+```
+```{r}
+pp_check(m1_avgdelta_collap_label)
+```
+
+```{r}
+m1_avgdelta_collap_label_nointer <- lmer(val_avg_delta ~ text_type + (1|ResponseNumber)+ (1|exam_num) + (1|ID), data = df_collapsed_senti_score)
+summary(m1_avgdelta_collap_label_nointer)
+```
+```{r}
+pp_check(m1_avgdelta_collap_label_nointer)
+```
+
+
+```{r}
+m2_peakdelta_collap_label <- lmer(val_peak_delta ~ text_type + (1|ResponseNumber) + (1|exam_num) + (1|ID), data = df_collapsed_senti_score)
+summary(m2_peakdelta_collap_label)
+```
+```{r}
+pp_check(m2_peakdelta_collap_label)
+```
+
+```{r}
+m3_enddelta_collap_label <- lmer(val_end_delta ~ text_type + (1|exam_num) + (1|ID), data = df_collapsed_senti_score)
+summary(m3_enddelta_collap_label)
+```
+##### Pre-post Regulation
+***For text block before and after regulation***
+```{r}
+df_pre_post_collapsed <- df_collapsed_senti_score %>% dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  dplyr::mutate(prev_senti = lag(score_avg),
+         post_senti = lead(score_avg),
+         prev_peak = lag(score_peak),
+         post_peak = lead(score_peak),
+         prev_end = lag(score_end),
+         post_end = lead(score_end),
+         prev_lead = lag(score_lead),
+         post_lead = lead(score_lead),
+         prev_type = lag(text_type),
+         post_type = lead(text_type),
+         prev_block_id = lag(block_id),
+         post_block_id = lead(block_id),
+         pre_block_senti = lag(block_sentiment),
+         post_block_senti = lead(block_sentiment)
+      ) %>%
+  ungroup()
+
+#%>% filter(collapsed_text_type == "Regulation")
+
+df_pre_post_collapsed <- df_pre_post_collapsed %>% dplyr::mutate(
+  pre_post_avg = post_senti-prev_senti,
+  pre_post_peak = post_peak-prev_peak,
+  pre_post_end = post_end-prev_end,
+  pre_post_end_lead = post_lead-prev_end)
+```
+
+```{r}
+m1_pre_post_avg_collapsed_reg <- lmer(pre_post_avg ~ 1 + (1|ID) + (1|exam_num) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m1_pre_post_avg_collapsed_reg)
+```
+
+```{r}
+m2_pre_post_peak_collapsed <- lmer(pre_post_peak ~ 1 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m2_pre_post_peak_collapsed)
+```
+```{r}
+m3_pre_post_end_collapsed <- lmer(pre_post_end ~ 1 + (1|ID) + (1|exam_num)+(1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m3_pre_post_end_collapsed)
+```
+```{r}
+sjPlot::sjplot(m3_pre_post_end_collapsed)
+```
+
+```{r}
+m4_pre_post_avg_senti_collapsed <- lmer(pre_post_avg ~ score_avg + (1|ID) + +(1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m4_pre_post_avg_senti_collapsed)
+```
+
+```{r}
+m5_pre_post_avg_senti_collapsed_text <- lmer(pre_post_avg ~ 0+text_type + (1|ID) + +(1|exam_num) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m5_pre_post_avg_senti_collapsed_text)
+```
+```{r}
+m5_pre_post_peak_senti_collapsed_text <- lmer(pre_post_peak ~ text_type + (1|ID) + +(1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m5_pre_post_peak_senti_collapsed_text)
+```
+
+```{r}
+m5_pre_post_end_senti_collapsed_text <- lmer(pre_post_end ~ text_type + (1|ID) + +(1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m5_pre_post_end_senti_collapsed_text)
+```
+```{r}
+m5_pre_post_end_lead_senti_collapsed_text <- lmer(pre_post_end_lead ~ text_type + (1|ID) + +(1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m5_pre_post_end_lead_senti_collapsed_text)
+```
+
+```{r}
+m6_pre_post_avg_senti_collapsed_text_bloksenti <- lmer(pre_post_avg ~ text_type + pre_block_senti +text_type*pre_block_senti + (1|ID) +(1|exam_num) + (1|ResponseNumber), data = df_pre_post_collapsed)
+summary(m6_pre_post_avg_senti_collapsed_text_bloksenti)
+```
+
+#### valence check after regulation
+```{r}
+df_pre_post_collapsed_reg_senti <- df_pre_post_collapsed %>% filter(
+  pre_block_senti == "POSITIVE",
+  text_type == "Regulation")
+```
+```{r}
+df_counts_post <- df_pre_post_collapsed_reg_senti %>%
+  dplyr::count(post_block_senti)
+
+df_counts_current <- df_pre_post_collapsed_reg_senti %>%
+  dplyr::count(block_sentiment)
+```
+
+```{r}
+ggplot(df_counts_post, aes(x = post_block_senti, y = n, fill = post_block_senti)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(
+    title = "Proportion of Sentiment After Regulation\n(Previous = Positive)",
+    x = "Post-Regulation Block Sentiment",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+ggplot(df_counts_current, aes(x = block_sentiment, y = n, fill = block_sentiment)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(
+    title = "Proportion of Sentiment After Regulation\n(Previous = Positive)",
+    x = "Regulation Block Sentiment",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+If the number of Positive-negative/positive-neutral transition correlated with GAD and reg ratio.
+
+```{r}
+df_pre_post_collapsed_nei_senti <- df_pre_post_collapsed %>% filter(
+  pre_block_senti == "POSITIVE",
+  text_type == "Neither")
+```
+
+```{r}
+df_counts_post <- df_pre_post_collapsed_nei_senti %>%
+  dplyr::count(post_block_senti)
+
+df_counts_current <- df_pre_post_collapsed_nei_senti %>%
+  dplyr::count(block_sentiment)
+```
+
+```{r}
+ggplot(df_counts_post, aes(x = post_block_senti, y = n, fill = post_block_senti)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(
+    title = "Proportion of Sentiment After Neither \n(Previous = Positive)",
+    x = "Post-Neither Block Sentiment",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+ggplot(df_counts_current, aes(x = block_sentiment, y = n, fill = block_sentiment)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(
+    title = "Proportion of Sentiment After Neither\n(Previous = Positive)",
+    x = "Neither Block Sentiment",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+```{r}
+df_pre_post_collapsed_exp_senti <- df_pre_post_collapsed %>% filter(
+  pre_block_senti == "POSITIVE",
+  text_type == "Expression")
+```
+
+```{r}
+df_counts_post <- df_pre_post_collapsed_exp_senti %>%
+  dplyr::count(post_block_senti)
+
+df_counts_current <- df_pre_post_collapsed_exp_senti %>%
+  dplyr::count(block_sentiment)
+```
+
+```{r}
+ggplot(df_counts_post, aes(x = post_block_senti, y = n, fill = post_block_senti)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(
+    title = "Proportion of Sentiment After Expression \n(Previous = Positive)",
+    x = "Post-Expression Block Sentiment",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+```{r}
+ggplot(df_counts_current, aes(x = block_sentiment, y = n, fill = block_sentiment)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(
+    title = "Proportion of Sentiment After Expression\n(Previous = Positive)",
+    x = "Expression Block Sentiment",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+##### Pre-post Expression
+***For block before and after expression***
+```{r}
+df_pre_post_collapsed_exp <- df_collapsed_senti_score %>% dplyr::group_by(ResponseNumber) %>%
+  mutate(prev_senti = lag(score_avg),
+         post_senti = lead(score_avg),
+         prev_peak = lag(score_peak),
+         post_peak = lead(score_peak),
+         prev_end = lag(score_end),
+         post_end = lead(score_end),
+         prev_type = lag(collapsed_text_type),
+         post_type = lead(collapsed_text_type),
+         prev_block_id = lag(block_id),
+         post_block_id = lead(collapsed_text_type)
+      ) %>%
+  ungroup %>% filter(collapsed_text_type == "Expression")
+
+df_pre_post_collapsed_exp <- df_pre_post_collapsed_exp %>% mutate(
+  pre_post_exp_avg = post_senti-prev_senti,
+  pre_post_exp_peak = post_peak-prev_peak,
+  pre_post_exp_end = post_end-prev_end)
+```
+
+```{r}
+m1_pre_post_avg_collapsed_exp <- lmer(pre_post_exp_avg ~ 1 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_exp)
+summary(m1_pre_post_avg_collapsed_exp)
+```
+
+```{r}
+m2_pre_post_peak_collapsed_exp <- lmer(pre_post_exp_peak ~ 1 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_exp)
+summary(m2_pre_post_peak_collapsed_exp)
+```
+```{r}
+m3_pre_post_end_collapsed_exp <- lmer(pre_post_exp_end ~ 1 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_exp)
+summary(m3_pre_post_end_collapsed_exp)
+```
+##### Pre-post Neither
+***For block before and after neither***
+```{r}
+df_pre_post_collapsed_nei <- df_collapsed_senti_score %>% group_by(ResponseNumber) %>%
+  mutate(prev_senti = lag(score_avg),
+         post_senti = lead(score_avg),
+         prev_peak = lag(score_peak),
+         post_peak = lead(score_peak),
+         prev_end = lag(score_end),
+         post_end = lead(score_end),
+         prev_type = lag(collapsed_text_type),
+         post_type = lead(collapsed_text_type),
+         prev_block_id = lag(block_id),
+         post_block_id = lead(collapsed_text_type)
+      ) %>%
+  ungroup %>% filter(collapsed_text_type == "Neither")
+
+df_pre_post_collapsed_nei <- df_pre_post_collapsed_nei %>% mutate(
+  pre_post_nei_avg = post_senti-prev_senti,
+  pre_post_nei_peak = post_peak-prev_peak,
+  pre_post_nei_end = post_end-prev_end)
+```
+
+```{r}
+m1_pre_post_avg_collapsed_nei <- lmer(pre_post_nei_avg ~ 1 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_nei)
+summary(m1_pre_post_avg_collapsed_nei)
+```
+
+```{r}
+m2_pre_post_peak_collapsed_nei <- lmer(pre_post_nei_peak ~ 1 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_nei)
+summary(m2_pre_post_peak_collapsed_nei)
+```
+
+```{r}
+m3_pre_post_end_collapsed_nei <- lmer(pre_post_nei_end ~ 1 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_nei)
+summary(m3_pre_post_end_collapsed_nei)
+```
+***A full model for pre-post score***
+```{r}
+df_pre_post_collapsed_all <- df_collapsed_senti_score %>% dplyr::group_by(ResponseNumber) %>%
+  mutate(prev_senti = lag(score_avg),
+         post_senti = lead(score_avg),
+         prev_type = lag(collapsed_text_type),
+         post_type = lead(collapsed_text_type),
+         prev_block_id = lag(block_id),
+         post_block_id = lead(collapsed_text_type)
+      ) %>%
+  ungroup 
+
+df_pre_post_collapsed_all <- df_pre_post_collapsed_all %>% dplyr::mutate(pre_post_avg = post_senti-prev_senti)
+```
+```{r}
+m1_pre_post_collapsed_all <- lmer(pre_post_avg ~ collapsed_text_type + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_all)
+summary(m1_pre_post_collapsed_all)
+```
+#####Plotting
+```{r}
+library(broom.mixed)
+
+coef_pre_post_collapsed_all <- broom.mixed::tidy(m1_pre_post_collapsed_all, effects = "fixed")
+coef_pre_post_collapsed_all
+```
+```{r}
+coef_pre_post_collapsed_all <- coef_pre_post_collapsed_all %>%
+  mutate(term = recode(term,
+                       '(Intercept)' = "Expression",
+                       collapsed_text_typeNeither = "Neither",
+                       collapsed_text_typeRegulation = "Regulation"))
+```
+```{r}
+library(wesanderson)
+# color selection
+library(RColorBrewer)
+
+# check palette
+display.brewer.pal(8, "Set2")  # shows the 8 colors in "Set2"
+
+# select specific colors (e.g., 2nd, 4th, and 6th)
+my_colors <- brewer.pal(8, "Set2")[c(2, 3, 1)]
+```
+
+
+```{r}
+pre_post_text_all_response_plot <- ggplot(coef_pre_post_collapsed_all, aes(x = term, y = estimate, fill = term)) +
+  geom_col(width = 0.6, color = "black", alpha = 0.8) +
+  geom_errorbar(aes(ymin = estimate - std.error, ymax = estimate + std.error),
+                width = 0.2) +
+  scale_fill_manual(values = my_colors) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = "Effect of Text Type on Sentiment Change (within response)",
+    x = "Text Type",
+    y = "Change in sentiment score"
+  ) +
+  theme_classic()
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/pre_post_text_all_response.png",plot = pre_post_text_all_response_plot, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/pre_post_text_all_response.pdf",plot = pre_post_text_all_response_plot, width = 6, heigh = 4, dpi = 300)
+pre_post_text_all_response_plot
+```
+
+#### Last phrase - First phrase
+```{r}
+# collapsed the df; calculate the dealta score between phrases.
+library(dplyr)
+
+collapse_text_blocks_with_delta <- function(label_api_text, sentiment, intensity, exam_num = NULL) {
+  # Collapse repeated labels
+  r <- rle(label_api_text)
+  block_id <- rep(seq_along(r$lengths), r$lengths)
+
+  # Build phrase-level dataframe
+  phrase_df <- tibble(
+    label_api_text = label_api_text,
+    sentiment = sentiment,
+    intensity = intensity,
+    block_id = block_id
+  )
+
+  if (!is.null(exam_num)) {
+    phrase_df$exam_num <- exam_num
+  }
+
+  # Block-level summary
+  block_summary <- phrase_df %>%
+    group_by(block_id) %>%
+    summarise(
+      collapsed_text_type = first(label_api_text),
+      length = n(),
+      score_sum = sum(sentiment * intensity),
+      score_avg = mean(sentiment * intensity),
+      score_peak = max(abs(sentiment * intensity)),
+      score_end = last(sentiment * intensity),
+      score_start = first(sentiment * intensity),
+      exam_num = if (!is.null(exam_num)) first(exam_num) else NA,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      block_sentiment = case_when(
+        score_sum > 0 ~ "POSITIVE",
+        score_sum < 0 ~ "NEGATIVE",
+        TRUE ~ "NEUTRAL"
+      ),
+      delta_next_block = lead(score_start) - score_end
+    )
+
+  return(block_summary)
+}
+
+
+```
+```{r}
+df_delta_blocks <- df_senti_full %>%
+  dplyr::group_by(ID, ResponseNumber) %>%
+  group_modify(~ collapse_text_blocks_with_delta(
+    label_api_text = .x$label_api_text,
+    sentiment = .x$api_val_num,
+    intensity = .x$api_intensity,
+    exam_num = .x$exam_num)) %>%
+  ungroup()
+```
+
+```{r}
+m1_last_first_phrase_delta <- lmer(delta_next_block ~ collapsed_text_type + 0 + (1|ID)+(1|ResponseNumber)+(1|exam_num), data = df_delta_blocks)
+
+summary(m1_last_first_phrase_delta)
+```
+##### exam average
+```{r}
+m2_last_first_phrase_delta <- lmer(delta_next_block ~ score_avg + (1|ID) + (1|ResponseNumber), data = df_delta_blocks)
+summary(m2_last_first_phrase_delta)
+```
+##### reg and exam_num
+```{r}
+df_delta_blocks_reg <- df_delta_blocks %>% filter(collapsed_text_type=="Regulation")
+m3_last_first_phrase_delta_exam <- lmer(delta_next_block ~ exam_num + (1|ID) + (1|ResponseNumber), data = df_delta_blocks_reg)
+summary(m3_last_first_phrase_delta_exam)
+```
+
+***For negative sentiment***
+Low ratio of regulation; not consecutive
+```{r}
+m1_avgdelta_neg_collap_label <- lmer(val_avg_delta ~ collapsed_text_type + (1|ResponseNumber)+ (1|exam_num) + (1|ID), data = df_collapsed_neg_senti_score)
+summary(m1_avgdelta_neg_collap_label)
+```
+
+#### Pre-post score vs. lead(ratio)
+#### TBD
+```{r}
+df_label_ratio_wide$exam_num <- as.factor(df_label_ratio_wide$exam_num)
+df_label_ratio_wide <- df_label_ratio_wide %>% relocate(exam_num, .after = ID)
+df_label_ratio_wide_per_exam <- df_label_ratio_wide %>% group_by(ID, exam_num) %>%
+  arrange(ID, exam_num) %>% 
+  summarise(exp_exam_avg = mean(Expression),
+    reg_exam_avg = mean(Regulation),
+    nei_exam_avg = mean(Neither),
+    .groups = 'drop')
+#Note: the df is not correctly group by ID and exam_num?? exam4 should have NA as lead score
+df_label_ratio_wide_per_exam <- df_label_ratio_wide_per_exam %>%
+  group_by(ID) %>%
+  arrange(exam_num, .by_group = TRUE) %>%
+  mutate(
+    is_last = (row_number() == n()),  # TRUE for last row in each group
+    lead_exp = ifelse(is_last, NA, lead(exp_exam_avg)),
+    lead_reg = ifelse(is_last, NA, lead(reg_exam_avg)),
+    lead_nei = ifelse(is_last, NA, lead(nei_exam_avg))
+  ) %>%
+  select(-is_last) %>%
+  ungroup()
+df_pre_post_collapsed_ratio <- inner_join(df_pre_post_collapsed_all, df_label_ratio_wide_per_exam, by = c("ID", "exam_num", "ResponseNumber"))
+```
+
+```{r}
+m1_pre_post_avg_lead_reg_ratio <- lmer(lead_reg ~ pre_post_avg +0+ (1|ID), data = df_pre_post_collapsed_ratio)
+summary(m1_pre_post_avg_lead_reg_ratio)
+
+pp_check(m1_pre_post_avg_lead_reg_ratio)
+```
+
+```{r}
+m1_pre_post_avg_lead_exp_ratio <- lmer(lead_exp ~ pre_post_avg + (1|ID), data = df_pre_post_collapsed_ratio)
+summary(m1_pre_post_avg_lead_exp_ratio)
+
+#pp_check(m1_pre_post_avg_lead_reg_ratio)
+```
+### Response
+#### data prep
+```{r}
+df_response_senti_calculate <- df_senti_full %>% group_by(ID, exam_num, ResponseNumber) %>%
+  summarise(
+      score_sum = sum(api_val_num * api_intensity),
+      score_avg = mean(api_val_num * api_intensity),
+      score_peak = max(abs(api_val_num * api_intensity)),
+      score_end = last(api_val_num * api_intensity)) %>%
+        mutate(
+      response_sentiment = case_when(
+        score_avg > 0 ~ "POSITIVE",
+        score_avg < 0 ~ "NEGATIVE",
+        TRUE ~ "NEUTRAL"
+      )
+    ) 
+```
+```{r}
+# Calculate the ratio of each text_type
+df_label_ratio <- df_senti_full %>%
+  group_by(ID, exam_num, ResponseNumber, label_api_text) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  complete(
+    label_api_text = unique(df_senti_full$label_api_text),
+    fill = list(n = 0)
+  ) %>%
+  group_by(ID, exam_num, ResponseNumber) %>%
+  mutate(ratio = n / sum(n)) %>%
+  ungroup()
+
+df_label_ratio_wide <- df_label_ratio %>%
+  select(ID, exam_num, ResponseNumber, label_api_text, ratio) %>%
+  pivot_wider(names_from = label_api_text, values_from = ratio, values_fill = 0)
+```
+```{r}
+df_response_senti_calculate <- df_response_senti_calculate %>% group_by(ID, exam_num, ResponseNumber) %>% mutate(val_avg_delta = lead(score_avg) - score_avg,
+       val_peak_delta = lead(score_peak) - score_peak,
+       val_end_delta = lead(score_end) - score_end) %>% ungroup()
+
+df_response_senti_score <- inner_join(df_label_ratio_wide, df_response_senti_calculate, by = c("ID", "exam_num", "ResponseNumber"))
+
+# Calculate the delta score
+df_response_senti_score <- df_response_senti_score %>% group_by(ID, exam_num, ResponseNumber) %>% mutate(val_avg_delta = lead(score_avg) - score_avg,
+       val_peak_delta = lead(score_peak) - score_peak,
+       val_end_delta = lead(score_end) - score_end) %>% ungroup()
+```
+#### Model
+##### sentiment score vs. label ratio within response
+```{r}
+m1_avgdelta_resp_label <- lmer(val_avg_delta ~ Expression + Regulation + Neither + (1|exam_num) + (1|ID), data = df_response_senti_score)
+summary(m1_avgdelta_resp_label)
+```
+```{r}
+pp_check(m1_avgdelta_resp_label)
+```
+
+```{r}
+m2_peakdelta_resp_label <- lmer(val_peak_delta ~ Expression + Regulation + Neither + (1|exam_num) + (1|ID), data = df_response_senti_score)
+summary(m2_peakdelta_resp_label)
+```
+```{r}
+m3_enddelta_resp_label <- lmer(val_end_delta ~ Expression + Regulation + Neither + (1|exam_num) + (1|ID), data = df_response_senti_score)
+summary(m3_enddelta_resp_label)
+```
+```{r}
+pp_check(m1_sentidelta_label)
+```
+
+#### label ratio
+```{r}
+# Load in response senti
+df_response <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/emaData_F24_resp_sentiment_v5.csv")
+
+df_response <- df_response[,-c(13,14)]
+
+for (i in (1:nrow(df_senti_full))){
+  phrase = df_senti_full$text_phrase[i]
+  df_senti_full$word_count[i] <- str_count(phrase,'[\\w\']+')
+}
+
+df_resp_senti <- df_senti_full
+```
+## response-level sentiment.
+```{r}
+df_response <- df_response %>% mutate(api_val_text = (case_when(valence == 1.0 ~"POSITIVE",
+                                                               valence == 0.5 ~ "MIXED",
+                                                               valence == -0.5 ~ "MIXED",
+                                                               valence == 0 ~ "NEUTRAL",
+                                                               valence == -1 ~ "NEGATIVE")))
+```
+
+```{r}
+# calculate regulation ratio of each response
+df_resp_word_sum_tmp <- df_resp_senti %>% group_by(ID, exam_num, ResponseNumber, label_api_text) %>% summarise(sum_word_count = sum(word_count), .groups = "drop")
+```
+
+```{r}
+df_resp_senti <- df_resp_senti %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  dplyr::mutate(
+    total_words = sum(word_count, na.rm = TRUE)
+  )
+```
+
+```{r}
+df_resp_senti <- df_resp_senti %>% dplyr::group_by (ID, exam_num, ResponseNumber,  time_since_grade_reveal_mins) %>% summarise (exp_count = sum(label_api_text == "Expression"),
+    reg_count = sum(label_api_text == "Regulation"),
+    nei_count = sum(label_api_text == "Neither"),
+    exp_word_count = sum(word_count[label_api_text == "Expression"]),
+    # Sum word_count ONLY for phrases with 'regulation' label
+    reg_word_count = sum(word_count[label_api_text == "Regulation"]),
+    # Sum word_count ONLY for phrases with 'neither' label
+    nei_word_count = sum(word_count[label_api_text == "Neither"]),
+    total_phrases = n(), 
+    total_words   = sum(word_count, na.rm = TRUE),
+    .groups = 'drop' # This tells dplyr to remove the grouping structure after summarise
+  ) %>%
+  dplyr::mutate(
+    # Calculate ratios
+    exp_word_ratio = exp_word_count / total_words,
+    reg_word_ratio = reg_word_count / total_words,
+    nei_word_ratio = nei_word_count / total_words,
+    exp_ratio = exp_count / total_phrases,
+    reg_ratio = reg_count / total_phrases,
+    nei_ratio = nei_count / total_phrases
+  )
+
+# attach sentiment and response ratio
+df_resp_senti$ID <- as.integer(df_resp_senti$ID)
+df_resp_senti$exam_num <- as.integer(df_resp_senti$exam_num)
+df_resp_senti$ResponseNumber <- as.integer(df_resp_senti$ResponseNumber)
+df_resp_senti_full <- inner_join(df_resp_senti, df_response, by = c("ID","exam_num","ResponseNumber"))
+
+df_resp_senti_full_PE <- inner_join(df_resp_senti_full, df_PE, by = c("ID","exam_num"))
+
+df_resp_senti_full_PE_mood <- inner_join(df_resp_senti_full_PE, df_mood, by = "ID")
+```
+# how regulation ratio influence next response valence
+```{r}
+# Focus on df_resp_senti_full for now
+df_resp_senti_full <- df_resp_senti_full %>% dplyr::group_by (ID, exam_num) %>% dplyr::mutate(next_valence = lead(api_val_text))
+
+df_resp_senti_full$next_valence <- as.factor(df_resp_senti_full$next_valence)
+df_resp_senti_full$api_val_text <- as.factor(df_resp_senti_full$api_val_text)
+```
+```{r}
+write.csv(df_resp_senti_full, "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/ER/emaData_F24_senti_resp.csv", row.names = FALSE)
+```
+
+```{r}
+df_resp_senti_full$next_valence <- relevel(df_resp_senti_full$next_valence, ref = "NEGATIVE")
+# for multiple responses exam
+brm_resp_reg_val <- brm(next_valence ~ reg_ratio + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+```
+```{r}
+summary(brm_resp_reg_val)
+```
+```{r}
+ce <- conditional_effects(
+  brm_resp_reg_val,
+  effects = "reg_ratio",
+  categorical = TRUE
+)
+
+plot_df <- ce$reg_ratio
+head(plot_df)
+table(plot_df$cats__)
+```
+```{r}
+ggplot(plot_df, aes(x = reg_ratio, y = estimate__, color = cats__, fill = cats__)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__), alpha = 0.15, color = NA) +
+  labs(
+    title = "Predicted Probability of Next Valence by Regulation Ratio",
+    x = "Regulation Ratio",
+    y = "Predicted Probability",
+    color = "Next valence",
+    fill = "Next valence"
+  ) +
+  theme_classic()
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/next_senti_reg_word_ratio.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/next_senti_reg_word_ratio.pdf",height=4, width=6, dpi=300)
+```
+```{r}
+plot_df_filtered <- plot_df %>%
+  dplyr::filter(cats__ %in% c("NEUTRAL", "MIXED"))
+
+ggplot(plot_df_filtered,
+       aes(x = reg_ratio, y = estimate__,
+           color = cats__, fill = cats__)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__),
+              alpha = 0.2, color = NA) +
+  labs(
+    title = "Predicted Probability of Next Valence by Regulation Proportion",
+    x = "Regulation Proportion",
+    y = "Predicted Probability",
+    color = "Following valence",
+    fill = "Following valence"
+  ) +
+  scale_color_manual(values = c(
+  "MIXED"    = "#7CAE00",
+  "NEUTRAL"  = "#00BFC4"
+)) +
+scale_fill_manual(values = c(
+  "MIXED"    = "#7CAE00",
+  "NEUTRAL"  = "#00BFC4"
+)) +
+  ylim(0,0.7) +
+  theme_classic()
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/next_senti_reg_word_ratio_mix_neu.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/next_senti_reg_word_ratio_mix_neu.pdf",height=4, width=6, dpi=300)
+```
+```{r}
+plot_df_filtered <- plot_df %>%
+  dplyr::filter(cats__ %in% c("POSITIVE", "NEGATIVE"))
+
+ggplot(plot_df_filtered,
+       aes(x = reg_ratio, y = estimate__,
+           color = cats__, fill = cats__)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__),
+              alpha = 0.2, color = NA) +
+  labs(
+    title = "Predicted Probability of Next Valence by Regulation Proportion",
+    x = "Regulation Proportion",
+    y = "Predicted Probability",
+    color = "Following valence",
+    fill = "Following valence"
+  ) +
+  scale_color_manual(values = c(
+  "NEGATIVE" = "#F8766D",
+  "POSITIVE" = "#C77CFF"
+)) +
+scale_fill_manual(values = c(
+  "NEGATIVE" = "#F8766D",
+  "POSITIVE" = "#C77CFF"
+)) +
+  ylim(0, 0.7)+
+  theme_classic()
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/next_senti_reg_word_ratio_pos_neg.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/next_senti_reg_word_ratio_pos_neg.pdf",height=4, width=6, dpi=300)
+```
+```{r}
+df_resp_senti_full_neg <- df_resp_senti_full %>% filter(api_val_text == "NEGATIVE")
+# for multiple responses exam
+brm_resp_reg_val_neg <- brm(next_valence ~ reg_ratio + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+```
+```{r}
+summary(brm_resp_reg_val_neg)
+```
+```{r}
+ce_neg <- conditional_effects(
+  brm_resp_reg_val_neg,
+  effects = "reg_ratio",
+  categorical = TRUE
+)
+
+plot(ce_neg)
+```
+
+```{r}
+pp_check(brm_resp_reg_val)
+```
+####***final model***
+```{r}
+#***final model***
+df_resp_senti_full$api_val_text <- relevel(df_resp_senti_full$api_val_text, ref = "NEGATIVE")
+df_resp_senti_full$api_val_text <- as.factor(df_resp_senti_full$api_val_text)
+# for multiple responses exam
+brm_resp_reg_curr_val <- brm(next_valence ~ reg_ratio*api_val_text + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+```
+```{r}
+summary(brm_resp_reg_curr_val)
+```
+```{r}
+conditional_effects(brm_resp_reg_curr_val,
+                    effects = "reg_ratio:api_val_text",
+                    categorical = TRUE)
+```
+```{r}
+brm_resp_reg_curr_val_noref <- brm(next_valence ~ 0+reg_ratio*api_val_text + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+```
+```{r}
+summary(brm_resp_reg_curr_val_noref)
+```
+```{r}
+nobs(m_cat_val_text_type)
+nobs(m_cat_val_text_type_cur)
+
+m_cat_val_text_type$formula
+m_cat_val_text_type_cur$formula
+
+identical(
+  model.frame(m_cat_val_text_type)$val_cat,
+  model.frame(m_cat_val_text_type_cur)$val_cat
+)
+```
+```{r}
+table(model.frame(m_cat_val_text_type)$val_cat)
+
+table(model.frame(m_cat_val_text_type_cur)$val_cat)
+```
+```{r}
+levels(model.frame(m_cat_val_text_type)$val_cat)
+
+levels(model.frame(m_cat_val_text_type_cur)$val_cat)
+```
+
+#### model_comparison
+```{r}
+modelval_phrase <- add_criterion(brm_resp_reg_val, "loo")
+modelcurr_phrase <- add_criterion(brm_resp_reg_curr_val, "loo")
+
+model_comparison_resp <- loo_compare(modelval_phrase, modelcurr_phrase, criterion = "loo")
+print(model_comparison_resp, simplify = FALSE)
+```
+
+#### next_valence~ reg_ratio*api_val_text*GAD_score
+```{r}
+df_resp_senti_full_mood <- inner_join(df_resp_senti_full, df_mood, by = "ID")
+```
+
+```{r}
+brm_resp_reg_curr_val_gad <- brm(next_valence ~ reg_ratio*api_val_text*GAD_score + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full_mood)
+
+```
+
+```{r}
+summary(brm_resp_reg_curr_val_gad)
+```
+```{r}
+gad_mean <- mean(df_resp_senti_full_mood$GAD_score, na.rm = TRUE)
+gad_sd   <- sd(df_resp_senti_full_mood$GAD_score, na.rm = TRUE)
+
+gad_vals <- c(gad_mean - gad_sd,
+              gad_mean + gad_sd)
+
+
+```
+```{r}
+newdat <- expand.grid(
+  reg_ratio = seq(min(df_resp_senti_full_mood$reg_ratio),
+                  max(df_resp_senti_full_mood$reg_ratio),
+                  length.out = 100),
+  api_val_text = levels(df_resp_senti_full_mood$api_val_text),
+  GAD_score = gad_vals
+)
+
+pred <- fitted(brm_resp_reg_curr_val_gad,
+               newdata = newdat,
+               re_formula = NA,
+               summary = TRUE)
+
+library(dplyr)
+library(tidyr)
+
+pred_df <- cbind(newdat, as.data.frame(pred))
+
+pred_long <- pred_df %>%
+  pivot_longer(
+    cols = starts_with("Estimate"),
+    names_to = "next_valence",
+    values_to = "prob"
+  )
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(pred_long,
+       aes(x = reg_ratio,
+           y = prob,
+           color = next_valence,
+           linetype = factor(GAD_score))) +
+  geom_line(size = 1.1) +
+  facet_wrap(~ api_val_text) +
+  labs(
+    y = "Predicted Probability of Next Valence",
+    x = "Regulation Ratio (Current)",
+    linetype = "GAD Level"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+brm_resp_reg_word_curr_val_gad <- brm(next_valence ~ reg_word_ratio*api_val_text*GAD_score + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full_mood)
+
+```
+```{r}
+summary(brm_resp_reg_word_curr_val_gad)
+```
+
+
+```{r}
+df_resp_senti_full <- df_resp_senti_full %>% dplyr::group_by(ID, exam_num) %>% dplyr::mutate(pre_valence = lag(api_val_text))
+```
+
+```{r}
+# for multiple responses exam
+brm_resp_reg_pre_post_val <- brm(next_valence ~ reg_ratio*pre_valence + (1+reg_ratio|ID) + (1|exam_num), family = categorical(),
+                        data = df_resp_senti_full)
+```
+```{r}
+summary(brm_resp_reg_pre_post_val)
+```
+
+### Response-level sentiment with sd score
+#### response sentiment + sd
+```{r}
+df_resp_sd <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/emaData_F24_sentiment_resp_sd_full.csv")
+
+df_resp_sd <- df_resp_sd %>% dplyr::group_by (ID, exam_num) %>% dplyr::mutate(
+  next_senti = lead(sentiment),
+  next_sd = lead(sd))
+```
+```{r}
+df_resp_senti_sd_full <- inner_join(df_resp_senti, df_resp_sd, by = c("ID","exam_num","ResponseNumber"))
+
+df_resp_senti_sd_full_PE <- inner_join(df_resp_senti_sd_full, df_PE, by = c("ID","exam_num"))
+
+df_resp_senti_sd_full_PE_mood <- inner_join(df_resp_senti_sd_full_PE, df_mood, by = "ID")
+```
+##### 
+```{r}
+brm_resp_reg_senti_EVPE <- brm(next_senti ~ reg_ratio + EVPE + (1+reg_ratio|ID) + (1|exam_num), data = df_resp_senti_sd_full_PE)
+```
+```{r}
+summary(brm_resp_reg_senti_EVPE)
+```
+```{r}
+pp_check(brm_resp_reg_senti_EVPE)
+```
+##### senti+sd model
+```{r}
+brm_resp_reg_senti_sd_EVPE <- brm(next_senti | se(next_sd, sigma = TRUE) ~ EVPE * reg_ratio +(1 + EVPE | ID) +(1 | exam_num),family = gaussian(),data = df_resp_senti_sd_full_PE,chains = 4,cores = 4
+)
+```
+```{r}
+summary(brm_resp_reg_senti_sd_EVPE)
+```
+```{r}
+pp_check(brm_resp_reg_senti_sd_EVPE)
+```
+
+```{r}
+brm_resp_reg_word_senti_sd_EVPE <- brm(next_senti | se(next_sd, sigma = TRUE) ~ EVPE * reg_word_ratio +(1 + EVPE | ID) +(1 | exam_num),family = gaussian(),data = df_resp_senti_sd_full_PE,chains = 4,cores = 4
+)
+
+summary(brm_resp_reg_word_senti_sd_EVPE)
+```
+```{r}
+plot(conditional_effects(brm_resp_reg_word_senti_sd_EVPE, effects = "EVPE:reg_word_ratio"))
+```
+```{r}
+library(dplyr)
+library(tidyr)
+library(tidybayes)
+library(ggplot2)
+
+reg_vals <- quantile(
+  df_resp_senti_sd_full_PE$reg_word_ratio,
+  probs = c(.25, .75),
+  na.rm = TRUE
+)
+
+newdat <- expand_grid(
+  EVPE = seq(
+    min(df_resp_senti_sd_full_PE$EVPE, na.rm = TRUE),
+    max(df_resp_senti_sd_full_PE$EVPE, na.rm = TRUE),
+    length.out = 100
+  ),
+  reg_word_ratio = quantile(
+    df_resp_senti_sd_full_PE$reg_word_ratio,
+    probs = c(.25, .75),
+    na.rm = TRUE
+  )
+) |>
+  mutate(
+    next_sd = mean(df_resp_senti_sd_full_PE$next_sd, na.rm = TRUE),
+    reg_level = factor(
+      reg_word_ratio,
+      levels = reg_vals,
+      labels = c("Low regulation", "High regulation")
+    )
+  )
+```
+
+```{r}
+pred <- add_epred_draws(
+  brm_resp_reg_word_senti_sd_EVPE,
+  newdata = newdat,
+  re_formula = NA
+)
+```
+```{r}
+ggplot(pred, aes(x = EVPE, y = .epred, color = reg_level, fill = reg_level)) +
+  stat_lineribbon(.width = 0.95, alpha = 0.25) +
+  labs(
+    x = "EVPE",
+    y = "Predicted next sentiment",
+    color = "Regulation ratio",
+    fill = "Regulation ratio"
+  ) +
+  theme_classic()
+```
+
+```{r}
+brm_resp_reg_word_cur_senti_sd_EVPE <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment*EVPE * reg_word_ratio + sd +(1 + EVPE | ID) +(1 | exam_num),family = gaussian(),data = df_resp_senti_sd_full_PE,chains = 4,cores = 4)
+
+summary(brm_resp_reg_word_cur_senti_sd_EVPE)
+```
+
+```{r}
+brm_resp_reg_word_cur_senti <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment * reg_word_ratio + time_since_grade_reveal_mins.y + (1 | ID) +(1 | exam_num),family = gaussian(),data = df_resp_senti_sd_full_PE,chains = 4,cores = 4)
+
+summary(brm_resp_reg_word_cur_senti)
+```
+```{r}
+pp_check(brm_resp_reg_word_cur_senti)
+```
+
+```{r}
+rand_resp_reg_word_cur_senti <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment * reg_word_ratio + (1 + sentiment * reg_word_ratio | ID) +(1 | exam_num),family = gaussian(), data = df_resp_senti_sd_full_PE,chains = 4,cores = 4)
+
+summary(rand_resp_reg_word_cur_senti)
+```
+
+##next_senti ~ Sentiment
+
+```{r}
+resp_next_senti_cur_senti <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment  + (1 + sentiment| ID) +(1 | exam_num),family = gaussian(), data = df_resp_senti_sd_full_PE,chains = 4,cores = 4)
+
+summary(resp_next_senti_cur_senti)
+```
+```{r}
+resp_next_senti_cur_reg_senti <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment + reg_word_ratio  + (1 + sentiment| ID) +(1 | exam_num),family = gaussian(), data = df_resp_senti_sd_full_PE,chains = 4,cores = 4)
+
+summary(resp_next_senti_cur_reg_senti)
+```
+```{r}
+resp_next_senti_cur_senti_reg_inx <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment * reg_word_ratio  + (1 + sentiment| ID) +(1 | exam_num),family = gaussian(), data = df_resp_senti_sd_full_PE,chains = 4,cores = 4)
+
+summary(resp_next_senti_cur_senti_reg_inx)
+```
+```{r}
+resp_next_senti_cur_senti_EVPE <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment + EVPE + (1 + sentiment| ID) +(1 | exam_num),family = gaussian(), data = df_resp_senti_sd_full_PE,chains = 4,cores = 4)
+
+summary(resp_next_senti_cur_senti_EVPE)
+```
+
+
+```{r}
+re_cur_senti <- ranef(rand_resp_reg_word_cur_senti)$ID
+```
+```{r}
+interaction_slope <- re_cur_senti[, "Estimate", "sentiment:reg_word_ratio"]
+
+interaction_df <- data.frame(
+  ID = rownames(re_cur_senti),
+  interaction_est = interaction_slope
+)
+```
+```{r}
+df_corr <- merge(interaction_df, df_mood, by = "ID")
+cor.test(df_corr$interaction_est, df_corr$GAD_score)
+cor.test(df_corr$interaction_est, df_corr$ERQ_score)
+cor.test(df_corr$interaction_est, df_corr$PHQ_score)
+cor.test(df_corr$interaction_est, df_corr$OCIR_score)
+cor.test(df_corr$interaction_est, df_corr$SIAS_score)
+```
+```{r}
+rand_resp_reg_word_cur_senti_gad <- brm(next_senti | se(next_sd, sigma = TRUE) ~ sentiment * reg_word_ratio *GAD_score + (1+sentiment * reg_word_ratio | ID) +(1 | exam_num),family = gaussian(), data = df_resp_senti_sd_full_PE_mood,chains = 4,cores = 4)
+
+summary(rand_resp_reg_word_cur_senti_gad)
+```
+#### Centering
+```{r}
+df_final <- df_resp_senti_sd_full_PE_mood %>%
+  group_by(ID) %>%
+  mutate(
+    # 1. Within-person
+    senti_wp = sentiment - mean(sentiment, na.rm = TRUE),
+    reg_wp   = reg_word_ratio - mean(reg_word_ratio, na.rm = TRUE),
+    
+    # 2. Between-person
+    senti_bp = mean(sentiment, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # 3. Level-2 variable
+    gad_c = GAD_score - mean(GAD_score, na.rm = TRUE),
+    rep_c = ERQ_rep - mean(ERQ_rep, na.rm = TRUE),
+    erq_c = ERQ_score - mean(ERQ_score, na.rm = TRUE)
+  )
+```
+
+```{r}
+brm_resp_reg_word_senti_sd_gad_center <- brm(next_senti | se(next_sd, sigma = TRUE) ~ senti_wp+reg_wp*gad_c +(1 + senti_wp*reg_wp | ID) +(1 | exam_num),family = gaussian(),data = df_final,chains = 4,cores = 4
+)
+```
+```{r}
+summary(brm_resp_reg_word_senti_sd_gad_center)
+```
+```{r}
+brm_resp_reg_word_senti_sd_gad_center_exam <- brm(next_senti | se(next_sd, sigma = TRUE) ~ senti_wp*reg_wp*gad_c +(1 + senti_wp*reg_wp | ID) +(1 | ID:exam_num),family = gaussian(),data = df_final,chains = 4,cores = 4
+)
+```
+
+```{r}
+summary(brm_resp_reg_word_senti_sd_gad_center_exam)
+```
+```{r}
+comp <- loo_compare(loo(brm_resp_reg_word_senti_sd_gad_center), loo(brm_resp_reg_word_senti_sd_gad_center_exam))
+print(comp, simplify = FALSE)
+```
+#### ERQ
+```{r}
+brm_resp_reg_word_senti_sd_rep_center <- brm(next_senti | se(next_sd, sigma = TRUE) ~ senti_wp*reg_wp*rep_c +(1 + senti_wp*reg_wp | ID) +(1 | exam_num),family = gaussian(),data = df_final,chains = 4,cores = 4
+)
+```
+
+
+```{r}
+summary(brm_resp_reg_word_senti_sd_rep_center)
+```
+```{r}
+fit1_baye_zib_reg_ratio_current_senti_gad <- brm(bf(reg_word_ratio ~ sentiment+gad_c + (1|ID) + (1|exam_num), zoi ~ sentiment * gad_c + (1 | ID)),family = zero_one_inflated_beta(), data = df_final)
+
+summary(fit1_baye_zib_reg_ratio_current_senti_gad)
+```
+```{r}
+pp_check(fit1_baye_zib_reg_ratio_current_senti_gad)
+```
+
+```{r}
+fit_zoib <- brm(
+  bf(
+    # 1. between 0-1
+    reg_word_ratio ~ sentiment * gad_c + (1 | ID) + (1 | exam_num),
+    # 1 or zero
+    zoi ~ sentiment * gad_c + (1 | ID),
+    # probability of 1, not zero
+    coi ~ sentiment * gad_c + (1 | ID)
+  ),
+  data = df_final,
+  family = zero_one_inflated_beta(),
+  chains = 4, cores = 4, iter = 2000
+)
+```
+```{r}
+summary(fit_zoib)
+```
+```{r}
+fit_zoib_pruned <- brm(
+  bf(
+    # mu 部分：只有主效应（假设调节程度的执行逻辑是线性的）
+    reg_word_ratio ~ sentiment + gad_c + (1 | ID) + (1 | exam_num),
+    
+    # zoi 部分：保留交互项（捕捉“极端化”的触发机制）
+    zoi ~ sentiment * gad_c + (1 | ID),
+    
+    # coi 部分：可以根据之前的显著性决定是否保留交互
+    coi ~ sentiment + gad_c + (1 | ID)
+  ),
+  data = df_final,
+  family = zero_one_inflated_beta(),
+  chains = 4, cores = 4, iter = 2000
+)
+```
+```{r}
+summary(fit_zoib_pruned)
+```
+
+```{r}
+loo_compare(loo(fit_zoib), loo(fit_zoib_pruned))
+```
+
+```{r}
+df_final <- df_final %>% dplyr::group_by(ID, exam_num) %>% dplyr::mutate(reg_word_ratio_next = lead(reg_word_ratio))
+```
+
+```{r}
+fit_zoib_next <- brm(
+  bf(
+    # 1. between 0-1
+    reg_word_ratio_next ~ sentiment * gad_c + (1 | ID) + (1 | exam_num),
+    # 1 or zero
+    zoi ~ sentiment * gad_c + (1 | ID),
+    # probability of 1, not zero
+    coi ~ sentiment * gad_c + (1 | ID)
+  ),
+  data = df_final,
+  family = zero_one_inflated_beta(),
+  chains = 4, cores = 4, iter = 2000
+)
+```
+```{r}
+summary(fit_zoib_next)
+```
+```{r}
+fit_zoib_next_prune <- brm(
+  bf(
+    # 1. between 0-1
+    reg_word_ratio_next ~ sentiment + gad_c + (1 | ID) + (1 | exam_num),
+    # 1 or zero
+    zoi ~ sentiment * gad_c + (1 | ID),
+    # probability of 1, not zero
+    coi ~ sentiment * gad_c + (1 | ID)
+  ),
+  data = df_final,
+  family = zero_one_inflated_beta(),
+  chains = 4, cores = 4, iter = 2000
+)
+```
+```{r}
+summary(fit_zoib_next_prune)
+```
+
+```{r}
+loo_compare(loo(fit_zoib_next), loo(fit_zoib_next_prune))
+```
+```{r}
+plot(conditional_effects(fit_zoib_pruned, effects = "sentiment", dpar = "mu"), 
+     points = TRUE) + 
+  ggtitle("Effect on Regulation Intensity (mu)")
+```
+
+```{r}
+plot(conditional_effects(fit_zoib_pruned, effects = "sentiment:gad_c", dpar = "zoi"), 
+     points = TRUE) + 
+  ggtitle("Effect on Regulation Intensity (mu)")
+```
+
+
+```{r}
+pp_check(fit_zoib_next)
+```
+
+#### Individual estimate
+```{r}
+rand_resp_reg_word_senti_sd_EVPE <- brm(next_senti | se(next_sd, sigma = TRUE) ~ EVPE * reg_word_ratio +(1 + EVPE*reg_word_ratio | ID) +(1 | exam_num),family = gaussian(),data = df_resp_senti_sd_full_PE,chains = 4,cores = 4
+)
+```
+```{r}
+summary(rand_resp_reg_word_senti_sd_EVPE)
+```
+
+```{r}
+re <- ranef(rand_resp_reg_word_senti_sd_EVPE)$ID
+```
+```{r}
+interaction_slope <- re[, "Estimate", "EVPE:reg_word_ratio"]
+
+interaction_df <- data.frame(
+  ID = rownames(re),
+  interaction_est = interaction_slope
+)
+```
+```{r}
+df_corr <- merge(interaction_df, df_mood, by = "ID")
+cor.test(df_corr$interaction_est, df_corr$GAD_score)
+cor.test(df_corr$interaction_est, df_corr$ERQ_score)
+cor.test(df_corr$interaction_est, df_corr$PHQ_score)
+cor.test(df_corr$interaction_est, df_corr$OCIR_score)
+cor.test(df_corr$interaction_est, df_corr$SIAS_score)
+```
+```{r}
+df_neuro <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/negative_emotionality_scores.csv")
+df_neu <- merge(interaction_df, df_neuro, by = "ID")
+```
+```{r}
+cor.test(df_neu$interaction_est, df_neu$negative_emotionality)
+```
+
+
+```{r}
+library(ggplot2)
+
+ggplot(df_corr, aes(GAD_score, interaction_est)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_classic()
+```
+
+
+
+##### sd ~ EVPE*reg_ratio
+```{r}
+brm_resp_reg_sd_EVPE <- brm(next_sd ~ EVPE * reg_ratio +(1 + EVPE | ID) +(1 | exam_num),family = gaussian(),data = df_resp_senti_sd_full_PE,chains = 4,cores = 4
+)
+
+summary(brm_resp_reg_sd_EVPE)
+```
+
+
+
+
+### Exam
+#### Data prep
+```{r}
+df_collapsed_senti_score <- df_collapsed_senti_score %>% relocate(exam_num, .after = ID)
+df_pre_post_collapsed_reg_exam <- df_collapsed_senti_score %>% dplyr::group_by(ID, exam_num) %>%
+  mutate(prev_senti = lag(score_avg),
+         post_senti = lead(score_avg),
+         prev_peak = lag(score_peak),
+         post_peak = lead(score_peak),
+         prev_end = lag(score_end),
+         post_end = lead(score_end),
+         prev_type = lag(collapsed_text_type),
+         post_type = lead(collapsed_text_type),
+         prev_block_id = lag(block_id),
+         post_block_id = lead(collapsed_text_type)
+      ) %>%
+  ungroup()
+
+#%>% filter(collapsed_text_type == "Regulation")
+
+df_pre_post_collapsed_reg_exam <- df_pre_post_collapsed_reg_exam %>% dplyr::mutate(
+  pre_post_reg_avg = post_senti-prev_senti,
+  pre_post_reg_peak = post_peak-prev_peak,
+  pre_post_reg_end = post_end-prev_end)
+
+df_pre_post_collapsed_reg_exam$exam_num <- as.factor(df_pre_post_collapsed_reg_exam$exam_num)
+df_pre_post_collapsed_reg_exam <- df_pre_post_collapsed_reg_exam %>% mutate(responseID = interaction(ID, exam_num, ResponseNumber, sep="_"))
+```
+
+#### Pre_post_reg vs. exam_num
+```{r}
+m1_pre_post_exam_reg <- lmer(pre_post_reg_avg ~ exam_num + 0 + (1 | ID)+ (1|responseID), data = df_pre_post_collapsed_reg_exam)
+summary(m1_pre_post_exam_reg)
+```
+
+```{r}
+plot_model(m1_pre_post_exam_reg, title = "Regulation efficacy across exams")
+```
+
+```{r}
+emmeans(m1_pre_post_exam_reg, pairwise~exam_num, adjust = "none")
+```
+
+```{r}
+df_pre_post_collapsed_all$exam_num <- as.factor(df_pre_post_collapsed_all$exam_num)
+m1_pre_post_exam_all <- lmer(pre_post_avg ~ exam_num*collapsed_text_type + (1 | ID)+ (1|ResponseNumber), data = df_pre_post_collapsed_all)
+summary(m1_pre_post_exam_all)
+```
+
+```{r}
+pp_check(m1_pre_post_exam_reg)
+```
+```{r}
+m2_pre_post_exam_reg <- brm(pre_post_reg_avg ~ exam_num + (1 | ID)+ (1|ResponseNumber), data = df_pre_post_collapsed_reg,family = gaussian(), chains = 4, cores = 4)
+summary(m2_pre_post_exam_reg )
+```
+```{r}
+ggplot(df_pre_post_collapsed_reg, aes(x = as.factor(exam_num), y = pre_post_reg_avg)) +
+  geom_boxplot(fill = "skyblue") +
+  theme_minimal() +
+  labs(x = "Exam Number", y = "Change in Sentiment After Regulation")
+```
+#### Gender difference
+```{r}
+# Load in processed qualtrics df
+df_mood <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/processed/premedEMA_exit_mood_final.csv")
+```
+```{r}
+table(df_mood$sex)
+```
+
+```{r}
+df_pre_post_collapsed_reg_sex <- inner_join(df_pre_post_collapsed_reg, df_mood, by = "ID")
+```
+```{r}
+m3_pre_post_exam_reg_sex <- lmer(pre_post_reg_avg ~ sex  + (1 | ID)+ (1|responseID), data = df_pre_post_collapsed_reg_sex)
+summary(m3_pre_post_exam_reg_sex)
+```
+
+```{r}
+m3_pre_post_exam_reg_sex <- lmer(pre_post_reg_avg ~ exam_num + sex  + (1 | ID)+ (1|responseID), data = df_pre_post_collapsed_reg_sex)
+summary(m3_pre_post_exam_reg_sex)
+```
+```{r}
+ggplot(df_pre_post_collapsed_reg_sex, aes(x = exam_num, y = pre_post_reg_avg, color = sex)) +
+  stat_summary(fun = mean, geom = "line", aes(group = sex)) +
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.1)
+```
+```{r}
+anova(m3_pre_post_exam_reg_sex, m1_pre_post_exam_reg)
+```
+```{r}
+AIC(m3_pre_post_exam_reg_sex, m1_pre_post_exam_reg)
+
+BIC(m3_pre_post_exam_reg_sex, m_pre_post_exam_reg)
+```
+
+####PE vs. Learning rate
+```{r}
+df_pre_post_collapsed_all <- df_pre_post_collapsed_all %>% group_by(ID, exam_num, ResponseNumber) %>% mutate(pre_post_alpha = lead(pre_post_avg) - pre_post_avg)
+```
+```{r}
+df_pre_post_collapsed_all$exam_num <- as.numeric(df_pre_post_collapsed_all$exam_num)
+df_pre_post_collapsed_alpha_cleaned <- df_pre_post_collapsed_all %>%
+  group_by(ID) %>%
+  filter(exam_num != max(exam_num, na.rm = TRUE)) %>%
+  ungroup()
+```
+
+```{r}
+m1_pre_post_alpha <- lmer(pre_post_alpha ~ collapsed_text_type * as.factor(exam_num) + 0 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_alpha_cleaned)
+
+summary(m1_pre_post_alpha)
+```
+```{r}
+m2_pre_post_alpha_exam <- lmer(pre_post_alpha ~ as.factor(exam_num) + 0 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_alpha_cleaned)
+
+summary(m2_pre_post_alpha_exam)
+```
+##### Regulation
+```{r}
+df_pre_post_collapsed_reg_alpha <- df_pre_post_collapsed_all %>% filter(collapsed_text_type == "Regulation")
+
+# Remove the maximum exam
+df_pre_post_collapsed_reg_alpha_cleaned <- df_pre_post_collapsed_reg_alpha %>%
+  group_by(ID) %>%
+  filter(exam_num != max(exam_num, na.rm = TRUE)) %>%
+  ungroup()
+```
+```{r}
+m2_pre_post_reg_alpha <- lmer(pre_post_alpha ~ as.factor(exam_num) + 0 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_reg_alpha)
+summary(m2_pre_post_reg_alpha)
+```
+
+```{r}
+pp_check(m2_pre_post_reg_alpha)
+```
+
+
+```{r}
+# remove the last exam (no learning rate)
+m3_pre_post_reg_alpha_cleaned <- lmer(pre_post_alpha ~ as.factor(exam_num) + 0 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_reg_alpha_cleaned)
+
+summary(m3_pre_post_reg_alpha_cleaned)
+pp_check(m3_pre_post_reg_alpha_cleaned)
+```
+
+```{r}
+# regulation poly model
+m2_pre_post_reg_alpha_poly <- lmer(pre_post_alpha ~ poly(exam_num,2) + 0 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_reg_alpha)
+
+summary(m2_pre_post_reg_alpha_poly)
+```
+```{r}
+ggplot(df_pre_post_collapsed_reg_alpha, aes(exam_num, pre_post_alpha)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2))
+```
+
+```{r}
+nls_model <- nls(pre_post_alpha ~ a * exp(-b * exam_num), data = df_pre_post_collapsed_reg_alpha, start = list(a = -0.1, b = 0.1))
+
+summary(nls_model)
+```
+```{r}
+plot(nls_model)
+```
+
+```{r}
+#plot(df_pre_post_collapsed_reg_alpha$exam_num, df_pre_post_collapsed_reg_alpha$pre_post_alpha)
+#curve(-0.1152 * exp(-0.1005 * x), add = TRUE, col = "red")
+
+library(ggplot2)
+
+ggplot(df_pre_post_collapsed_reg_alpha, aes(x = exam_num, y = pre_post_alpha)) +
+  geom_point(alpha = 0.5) +  # Raw data points
+  geom_smooth(
+    method = "nls",
+    formula = y ~ a * exp(-b * x),
+    method.args = list(start = c(a = -0.1, b = 0.1)),
+    se = FALSE,
+    color = "red"
+  ) +
+  labs(title = "Exponential Decay Fit", x = "Exam Number", y = "pre_post_alpha")
+```
+```{r}
+plot(resid(nls_model) ~ fitted(nls_model))
+abline(h = 0, col = "red")
+```
+
+```{r}
+AIC(m2_pre_post_reg_alpha, nls_model)
+# nls model fits better? 
+```
+
+```{r}
+# sum(is.na(df_pre_post_collapsed_reg_alpha$pre_post_alpha))
+df_pre_post_collapsed_reg_alpha$exam_num <-as.numeric(df_pre_post_collapsed_reg_alpha$exam_num)
+```
+
+```{r}
+library(nlme)
+df_grouped <- groupedData(pre_post_alpha ~ exam_num | ID, data = df_pre_post_collapsed_reg_alpha)
+
+str(df_grouped)
+
+df_grouped$exam_num <- as.numeric(df_grouped$exam_num)
+```
+```{r}
+logistic_model <- nlme(
+  pre_post_alpha ~ SSlogis(exam_num, Asym, xmid, scal),
+  fixed = Asym + xmid + scal ~ 1,
+  random = Asym ~ 1 | ID,
+  data = df_grouped,
+  start = list(
+    fixed = c(
+      Asym = max(df$pre_post_alpha, na.rm = TRUE),  # Asymptote ≈ max observed value
+      xmid = median(df$exam_num),                   # Midpoint ≈ median exam number
+      scal = 1                                      # Default slope
+    )
+  ),
+  control = list(msMaxIter = 500, pnlsMaxIter = 50)
+)
+```
+
+
+```{r}
+nlme_model <- nlme(
+  pre_post_alpha ~ SSlogis(exam_num, Asym, xmid, scal),
+  fixed = Asym + xmid + scal ~ 1,
+  random = Asym ~ 1 | ID,  # Allow asymptote to vary by participant
+  data = df_grouped,               # Use the groupedData object
+  control = list(msMaxIter = 500)
+)
+```
+
+##### Expression
+```{r}
+df_pre_post_collapsed_exp_alpha <- df_pre_post_collapsed_all %>% filter(collapsed_text_type == "Expression")
+```
+
+```{r}
+m3_pre_post_exp_alpha <- lmer(pre_post_alpha ~ exam_num + 0 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_exp_alpha)
+
+summary(m3_pre_post_exp_alpha)
+```
+##### Neither
+```{r}
+df_pre_post_collapsed_nei_alpha <- df_pre_post_collapsed_all %>% filter(collapsed_text_type == "Neither")
+```
+
+```{r}
+m4_pre_post_nei_alpha <- lmer(pre_post_alpha ~ exam_num + 0 + (1|ID) + (1|ResponseNumber), data = df_pre_post_collapsed_nei_alpha)
+
+summary(m4_pre_post_nei_alpha)
+```
+
+## PE
+One PE score per exam
+### Data prep
+```{r}
+df_PE$exam_num <- as.factor(df_PE$exam_num)
+df_PE <- df_PE %>% mutate(PE_1_val = case_when(PE_1 < 0 ~ "negative",
+                                               PE_1 > 0 ~ "positive",
+                                               PE_1 == 0 ~ "zero"), 
+                          PE_1_mag = abs(PE_1),
+                          PE_2_val = case_when(PE_2 < 0 ~ "negative",
+                                               PE_2 > 0 ~ "positive",
+                                               PE_2 == 0 ~ "zero"),
+                          PE_2_mag = abs(PE_2),
+                          EVPE_val = case_when(EVPE < 0 ~ "negative",
+                                               EVPE > 0 ~ "positive",
+                                               EVPE == 0 ~ "zero"),
+                          EVPE_mag = abs(EVPE),)
+df_collapsed_senti_score$exam_num <- as.factor(df_collapsed_senti_score$exam_num)
+df_collapsed_senti_PE <- inner_join(df_collapsed_senti_score, df_PE, by = c("ID", "exam_num"))
+```
+
+### Model
+#### PE_2 vs senti_score
+```{r}
+m1_avg_senti_collapsed_PE_2 <- lmer(score_avg ~ PE_2 + average_grade + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_collapsed_senti_PE)
+summary(m1_avg_senti_collapsed_PE_2)
+```
+
+```{r}
+m2_peak_senti_collapsed_PE_2 <- lmer(score_peak ~ PE_2 + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_collapsed_senti_PE)
+
+summary(m2_peak_senti_collapsed_PE_2)
+```
+```{r}
+m3_end_senti_collapsed_PE_2 <- lmer(score_end ~ PE_2 + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_collapsed_senti_PE)
+
+summary(m3_end_senti_collapsed_PE_2)
+```
+```{r}
+m2_avg_senti_collapsed_PE_2_exam <- lmer(exam_avg ~ PE_2 + (1|ID) + (1|exam_num), data = df_collapsed_senti_score_exam_df)
+
+summary(m2_avg_senti_collapsed_PE_2_exam)
+```
+####Plotting
+```{r}
+PE_2_exam_senti_plot <- ggplot(df_collapsed_senti_score_exam_df, aes(x = PE_2, y = exam_avg)) +
+  geom_point(size = 2, alpha = 0.6, color = "skyblue2") +
+  geom_smooth(method = "lm", se = TRUE, color = "#e6550d", fill = "#fdae6b") +
+  labs(
+    title = "Relationship between PE 2 and average exam sentiment",
+    x = "PE 2",
+    y = "Average sentiment score (per exam)"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text( hjust = 0.5)
+  )
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PE_2_exam_senti.png",plot = PE_2_exam_senti_plot, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PE_2_exam_senti.pdf",plot = PE_2_exam_senti_plot, width = 6, heigh = 4, dpi = 300)
+PE_2_exam_senti_plot
+```
+ #### EVPE vs senti_score
+```{r}
+df_collapsed_senti_score_exam <- df_senti_full %>%
+  dplyr::group_by(ID) %>%
+  group_modify(~ collapse_text_blocks(
+    label_api_text = .x$label_api_text,
+    sentiment = .x$api_val_num,
+    intensity = .x$api_intensity, 
+    exam_num = .x$exam_num)) %>%
+  ungroup()
+
+df_collapsed_senti_score_exam <- df_collapsed_senti_score_exam %>%dplyr::group_by(ID, exam_num) %>% mutate(exam_avg = mean(score_avg, na.rm = TRUE)) %>% ungroup()
+df_collapsed_senti_score_exam_unique <- df_collapsed_senti_score_exam %>%
+  distinct(ID, exam_avg, .keep_all = TRUE)
+```
+```{r}
+df_collapsed_senti_score_exam_df<- inner_join(df_PE,df_collapsed_senti_score_exam_unique, by = c("ID", "exam_num" ))
+```
+
+```{r}
+# contain response number
+m1_avg_senti_collapsed_EVPE_co <- lmer(score_avg ~ EVPE + average_grade + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_collapsed_senti_PE)
+summary(m1_avg_senti_collapsed_EVPE_co)
+```
+
+```{r}
+m2_avg_senti_collapsed_EVPE <- lmer(score_avg ~ EVPE + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_collapsed_senti_PE)
+
+summary(m2_avg_senti_collapsed_EVPE)
+```
+```{r}
+m2_avg_senti_collapsed_EVPE_exam <- lmer(exam_avg ~ EVPE + (1|ID) + (1|exam_num), data = df_collapsed_senti_score_exam_df)
+
+summary(m2_avg_senti_collapsed_EVPE_exam)
+```
+####Plotting
+```{r}
+EVPE_exam_senti_plot <- ggplot(df_collapsed_senti_score_exam_df, aes(x = EVPE, y = exam_avg)) +
+  geom_point(size = 2, alpha = 0.6, color = "skyblue2") +
+  geom_smooth(method = "lm", se = TRUE, color = "#e6550d", fill = "#fdae6b") +
+  labs(
+    title = "Relationship between EVPE and average exam sentiment",
+    x = "EVPE",
+    y = "Average sentiment score (per exam)"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text( hjust = 0.5)
+  )
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/EVPE_exam_senti.png",plot = EVPE_exam_senti_plot, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/EVPE_exam_senti.pdf",plot = EVPE_exam_senti_plot, width = 6, heigh = 4, dpi = 300)
+EVPE_exam_senti_plot
+```
+
+```{r}
+m2_peak_senti_collapsed_PE <- lmer(score_peak ~ EVPE + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_collapsed_senti_PE)
+
+summary(m2_peak_senti_collapsed_EVPE)
+```
+```{r}
+m3_end_senti_collapsed_PE <- lmer(score_end ~ EVPE + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_collapsed_senti_PE)
+
+summary(m3_end_senti_collapsed_EVPE)
+```
+#### PE2 vs. pre-post reg
+```{r}
+# df_pre_post_collapsed_reg_alpha_cleaned
+df_pre_post_collapsed_reg_alpha_cleaned$exam_num <- as.factor(df_pre_post_collapsed_reg_alpha_cleaned$exam_num)
+df_PE$exam_num <- as.numeric(df_PE$exam_num)
+df_pre_post_collapsed_reg_PE <- inner_join(df_pre_post_collapsed_reg, df_PE, by = c("ID", "exam_num"))
+
+df_pre_post_collapsed_reg$exam_num <- as.numeric(df_pre_post_collapsed_reg$exam_num)
+df_pre_post_collapsed_reg_PE_cleaned <- df_pre_post_collapsed_reg_PE %>% mutate(exam_num = as.numeric(exam_num)) %>% 
+  group_by(ID) %>%
+  filter(exam_num != max(exam_num, na.rm = TRUE)) %>%
+  ungroup()
+```
+```{r}
+m1_pre_post_avg_reg_PE_2 <- lmer(pre_post_reg_avg ~ PE_2 + average_grade + exam_num + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_PE_2)
+```
+
+####EVPE vs. pre_post_reg
+```{r}
+m1_pre_post_avg_reg_EVPE <- lmer(pre_post_reg_avg ~ EVPE + (1|ID) + (1|exam_num), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_EVPE)
+```
+```{r}
+pp_check(m1_pre_post_avg_reg_EVPE)
+```
+```{r}
+ggplot(data = df_pre_post_collapsed_reg_PE, aes(x = EVPE, y = pre_post_reg_avg)) +
+  geom_point() + geom_smooth(method=lm)
+```
+
+```{r}
+m1_pre_post_avg_reg_EVPE_val <- lmer(pre_post_reg_avg ~ EVPE_val + 0+ (1|ID) + (1|exam_num), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_EVPE_val)
+```
+```{r}
+emmeans(m1_pre_post_avg_reg_EVPE_val, ~EVPE_val)
+```
+```{r}
+plot_model(m1_pre_post_avg_reg_EVPE_val)
+```
+```{r}
+library(effects)
+library(lme4)
+library(ggplot2)
+```
+
+```{r}
+ee <- Effect(c("EVPE_val"),m1_pre_post_avg_reg_EVPE_val) 
+ee
+```
+
+```{r}
+ggplot(df_pre_post_collapsed_reg_PE, aes(x = EVPE_val, y = pre_post_reg_avg)) +
+  geom_bar(stat = "identity") +
+  labs(title = "My Bar Plot",
+       subtitle = "Showing values by category",
+       x = "Category Name",
+       y = "Observed Value")
+```
+```{r}
+ggplot(data = df_pre_post_collapsed_reg_PE, aes(x = EVPE_val, y = pre_post_reg_avg)) +
+  geom_point() + geom_smooth(method=lm)
+```
+
+```{r}
+pp_check(m1_pre_post_avg_reg_EVPE_val)
+```
+```{r}
+m1_pre_post_avg_reg_EVPE_int <- lmer(pre_post_reg_avg ~ EVPE_val*EVPE_mag +0+ (1|ID) + (1|exam_num), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_EVPE_int)
+```
+```{r}
+plot_model(m1_pre_post_avg_reg_EVPE_int)
+```
+
+
+```{r}
+pp_check(m1_pre_post_avg_reg_EVPE_int)
+```
+
+```{r}
+plot_model(m1_pre_post_avg_reg_EVPE_int, type = "int")
+```
+
+#### PE vs. Learning
+```{r}
+m1_pre_post_alpha_reg_pe <- lmer(pre_post_reg_alpha ~ PE_2 +0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE_cleaned)
+
+summary(m1_pre_post_alpha_reg_pe)
+```
+
+```{r}
+m1_pre_post_alpha_reg_pe_val <- lmer(pre_post_reg_alpha ~ PE_2_val +0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE_cleaned)
+summary(m1_pre_post_alpha_reg_pe_val)
+```
+
+```{r}
+m1_pre_post_alpha_reg_pe_mag <- lmer(pre_post_reg_alpha ~ PE_2_mag +0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE_cleaned)
+
+summary(m1_pre_post_alpha_reg_pe_mag)
+```
+```{r}
+m1_pre_post_alpha_reg_pe_val_mag <- lmer(pre_post_reg_alpha ~ PE_2_mag * PE_2_val + 0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE_cleaned)
+
+summary(m1_pre_post_alpha_reg_pe_val_mag)
+```
+
+```{r}
+m1_pre_post_alpha_reg_avg <- lmer(pre_post_reg_alpha ~ average_grade +0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE_cleaned)
+
+summary(m1_pre_post_alpha_reg_avg)
+```
+#### PE_1 vs. pre_post_avg
+```{r}
+m1_pre_post_avg_reg_pe_1 <- lmer(pre_post_reg_avg ~ PE_1 + (1|ID) + (1|responseID) + (1|exam_num), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_pe_1)
+```
+
+#### PE_2 vs. pre_post_avg
+```{r}
+m1_pre_post_avg_reg_pe <- lmer(pre_post_reg_avg ~ PE_2 + (1|ID) + (1|responseID) + (1|exam_num), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_pe)
+```
+#### PE_2_mag vs. pre-post_avg
+```{r}
+m1_pre_post_avg_reg_pe_mag <- lmer(pre_post_reg_avg ~ PE_2_mag + (1|ID) +  (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_pe_mag)
+```
+#### PE_2_mag*average vs. pre-post
+```{r}
+m2_pre_post_avg_reg_pe_mag_intx <- lmer(pre_post_reg_avg ~  PE_2_mag*average_grade + 0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m2_pre_post_avg_reg_pe_mag_intx)
+```
+#### PE_2_val vs. pre-post reg
+```{r}
+m3_pre_post_avg_reg_pe_val <- lmer(pre_post_reg_avg ~ PE_2_val + 0 + (1|ID) + (1|exam_num) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m3_pre_post_avg_reg_pe_val)
+```
+```{r}
+emmeans(m3_pre_post_avg_reg_pe_val, pairwise ~ PE_2_val)
+```
+
+#### PE_2_val*average vs. pre-post reg
+```{r}
+m4_pre_post_avg_reg_pe_val_intx <- lmer(pre_post_reg_avg ~  PE_2_val*average_grade + 0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m4_pre_post_avg_reg_pe_val_intx)
+```
+
+```{r}
+m1_pre_post_avg_reg_pe_val_mag <- lmer(pre_post_reg_avg ~  PE_2_val * PE_2_mag + 0 + (1|ID) + (1|exam_num) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_pe_val_mag)
+```
+
+#### EVPE val
+```{r}
+m1_pre_post_avg_reg_evpe_val <- lmer(pre_post_reg_avg ~  EVPE_val + 0 + (1|ID) + (1|exam_num) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_evpe_val)
+```
+```{r}
+emmeans(m1_pre_post_avg_reg_evpe_val, pairwise ~ EVPE_val)
+```
+```{r}
+m1_pre_post_avg_reg_evpe <- lmer(pre_post_reg_avg ~  EVPE  + (1|ID) + (1|exam_num) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_evpe)
+```
+#### EVPE int vs. pre-post-reg
+```{r}
+m1_pre_post_avg_reg_evpe_val_mag <- lmer(pre_post_reg_avg ~  EVPE_val * EVPE_mag + 0 + (1|ID) + (1|responseID) + (1|exam_num), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_evpe_val_mag)
+```
+```{r}
+emmeans(m1_pre_post_avg_reg_evpe_val, pairwise ~ EVPE_val)
+```
+#### Average * pre-post_reg
+```{r}
+m1_pre_post_avg_reg_avg <- lmer(pre_post_reg_avg ~  average_grade + 0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m1_pre_post_avg_reg_avg)
+```
+```{r}
+m2_pre_post_avg_reg_avg_PE_val_mag <- lmer(pre_post_reg_avg ~  PE_2_val*PE_2_mag*average_grade + 0 + (1|ID) + (1|responseID), data = df_pre_post_collapsed_reg_PE)
+
+summary(m2_pre_post_avg_reg_avg_PE_val_mag)
+```
+
+```{r}
+
+```
+
+##Individual difference
+### Load in survey data
+```{r}
+df_mood <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/processed/premedEMA_exit_mood_final.csv")
+```
+
+```{r}
+# Load in neuroticism survey
+df_neuro <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/negative_emotionality_scores.csv")
+colnames(df_neuro)[1] = "ID"
+```
+
+```{r}
+df_pre_post_collapsed_tmp <- df_pre_post_collapsed %>% relocate(exam_num, .after = ID)
+```
+
+
+```{r}
+# df_pre_post_collapsed_reg_tmp <- df_pre_post_collapsed_tmp %>% group_by (ID) %>% summarise(pre_post_reg_mean = mean(pre_post_reg_avg)) %>% ungroup()
+```
+
+```{r}
+df_pre_post_collapsed_mood <- inner_join(df_pre_post_collapsed_tmp, df_mood, by = "ID")
+
+df_pre_post_collapsed_mood$exam_num <- as.factor(df_pre_post_collapsed_mood$exam_num)
+df_pre_post_collapsed_mood_pe <- inner_join(df_pre_post_collapsed_mood, df_PE, by = c("ID", "exam_num"))
+```
+### lmer model + GAD
+```{r}
+m5_pre_post_avg_senti_collapsed_text_gad <- lmer(pre_post_avg ~ GAD_score+text_type +GAD_score*text_type + (1|ID) + +(1|exam_num) + (1|ResponseNumber), data = df_pre_post_collapsed_mood_pe)
+summary(m5_pre_post_avg_senti_collapsed_text_gad)
+```
+
+```{r}
+pp_check(m5_pre_post_avg_senti_collapsed_text_gad)
+```
+
+### Transition between positive - neutral/positive - negative
+```{r}
+df_transitions <- df_pre_post_collapsed %>% filter(block_sentiment == "POSITIVE") %>%
+  dplyr::mutate(transition_type = case_when(
+    post_block_senti == "NEGATIVE" ~ "pos_neg",
+    post_block_senti == "NEUTRAL" ~ "pos_neu",
+    TRUE ~ NA_character_
+  )) %>% filter(!is.na(transition_type))
+```
+
+```{r}
+df_transition_counts <- df_transitions %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  summarise(
+    Pos_to_Neg = sum(transition_type == "pos_neg"),
+    Pos_to_Neu = sum(transition_type == "pos_neu"),
+    .groups = "drop"
+  )
+```
+```{r}
+df_transition_counts$ID <- as.integer(df_transition_counts$ID)
+df_transition_counts$exam_num <- as.integer(df_transition_counts$exam_num)
+df_transition_counts$ResponseNumber <- as.integer(df_transition_counts$ResponseNumber)
+df_transition_counts_gad <- inner_join(df_transition_counts, df_mood, by = "ID")
+df_transition_counts_gad_PE <- inner_join(df_transition_counts_gad, df_PE, by = c("ID", "exam_num"))
+```
+```{r}
+cor.test(df_transition_counts_gad$GAD_score, df_transition_counts_gad$Pos_to_Neu)
+
+```
+```{r}
+cor.test(df_transition_counts_gad$GAD_score, df_transition_counts_gad$Pos_to_Neg)
+```
+```{r}
+cor.test(df_transition_counts_gad_PE$GAD, df_transition_counts_gad_PE$Pos_to_Neg)
+```
+```{r}
+cor.test(df_transition_counts_gad_PE$GAD, df_transition_counts_gad_PE$Pos_to_Neu)
+```
+```{r}
+m7_transit_neg_gad_EVPE <- lmer(Pos_to_Neg ~ EVPE + GAD + (1|ID) + (1|exam_num), data = df_transition_counts_gad_PE)
+summary(m7_transit_neg_gad_EVPE)
+```
+```{r}
+m7_transit_neg_EVPE<- lmer(Pos_to_Neg ~ EVPE + (1|ID) + (1|exam_num), data = df_transition_counts_gad_PE)
+summary(m7_transit_neg_EVPE)
+```
+#### Final: pos_to_neg ~ GAD_score
+```{r}
+m7_transit_neg_gad_score <- lmer(Pos_to_Neg ~ GAD_score + (1|ID) + (1|exam_num), data = df_transition_counts_gad_PE)
+summary(m7_transit_neg_gad_score)
+```
+```{r}
+plot_model(m7_transit_neg_gad_score, type = "pred", terms = "GAD_score")
+```
+
+```{r}
+library(ggeffects)
+library(ggplot2)
+
+GAD_pos_neg_plot <- ggpredict(
+  m7_transit_neg_gad_score,
+  terms = "GAD_score"
+)
+
+GAD_pos_neg_plot_df <- as.data.frame(GAD_pos_neg_plot)
+
+ggplot() +
+  # Original observations
+  geom_point(
+    data = df_transition_counts_gad_PE,
+    aes(x = GAD_score, y = Pos_to_Neg),
+    alpha = 0.3,
+    color = "lightskyblue1",
+    size = 2
+  ) +
+
+  # 95% CI
+  geom_ribbon(
+    data = GAD_pos_neg_plot_df,
+    aes(
+      x = x,
+      ymin = conf.low,
+      ymax = conf.high
+    ),
+    fill = "skyblue3",
+    alpha = 0.2
+  ) +
+
+  # Model-estimated relationship
+  geom_line(
+    data = GAD_pos_neg_plot_df,
+    aes(x = x, y = predicted),
+    color = "skyblue3",
+    linewidth = 1.2
+  ) +
+
+  labs(
+    x = "GAD Score",
+    y = "Positive-to-Negative Transitions"
+  ) +
+
+  theme_classic()
+```
+```{r}
+plot_counts <- df_transition_counts_gad_PE %>%
+  dplyr::count(GAD_score, Pos_to_Neg)
+
+ggplot(plot_counts,
+       aes(x = GAD_score, y = Pos_to_Neg)) +
+  geom_point(
+    aes(size = n),
+    alpha = .5,
+    color = "skyblue3"
+  ) +
+  geom_smooth(
+    data = df_transition_counts_gad_PE,
+    aes(x = GAD_score, y = Pos_to_Neg),
+    method = "lm",
+    se = TRUE,
+    inherit.aes = FALSE
+  ) +
+  scale_y_continuous(breaks = scales::pretty_breaks()) +
+  labs(
+    x = "GAD Score",
+    y = "Positive-to-Negative Transitions",
+    size = "Number of observations"
+  ) +
+  theme_classic()
+```
+
+
+```{r}
+m7_transit_neg_gad_score_EVPE <- lmer(Pos_to_Neg ~ EVPE + GAD_score + (1|ID) + (1|exam_num), data = df_transition_counts_gad_PE)
+summary(m7_transit_neg_gad_score_EVPE)
+```
+```{r}
+m7_transit_neg_gad_score_EVPE_int <- lmer(Pos_to_Neg ~ EVPE + GAD_score + EVPE*GAD_score + (1|ID) + (1|exam_num), data = df_transition_counts_gad_PE)
+summary(m7_transit_neg_gad_score_EVPE_int)
+```
+```{r}
+# comparison: interaction model is not better than the simple model
+anova(m7_transit_neg_gad_score,m7_transit_neg_gad_score_EVPE, m7_transit_neg_gad_score_EVPE_int)
+```
+
+```{r}
+m7_transit_neu_gad_EVPE <- lmer(Pos_to_Neu ~ EVPE + GAD + (1|ID) + (1|exam_num), data = df_transition_counts_gad_PE)
+summary(m7_transit_neu_gad_EVPE)
+```
+```{r}
+m7_transit_neu_gad_EVPE <- lmer(Pos_to_Neu ~ EVPE + GAD + (1|ID) + (1|exam_num), data = df_transition_counts_gad_PE)
+summary(m7_transit_neu_gad_EVPE)
+```
+#### Regulation?
+```{r}
+# extract regulation ratio for response
+df_transitions$ID <- as.integer(df_transitions$ID)
+df_transitions$exam_num <- as.integer(df_transitions$exam_num)
+df_transitions$ResponseNumber <- as.integer(df_transitions$ResponseNumber)
+
+
+```
+```{r}
+df_transition_reg_counts <- df_transitions %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  summarise(
+    Pos_to_Neg = sum(transition_type == "pos_neg"),
+    Pos_to_Neu = sum(transition_type == "pos_neu"),
+    .groups = "drop"
+  )
+
+df_reg_ratio_transit_mood <-  inner_join(df_resp_senti_full, df_transition_counts_gad_PE, by = c("ID", "exam_num","ResponseNumber"))
+
+```
+```{r}
+m7_transit_neg_reg <- lmer(Pos_to_Neg ~ reg_word_ratio + (1|ID) + (1|exam_num), data = df_reg_ratio_transit_mood)
+summary(m7_transit_neg_reg)
+```
+
+```{r}
+m7_transit_neg_gad_score_reg <- lmer(Pos_to_Neg ~ GAD_score + reg_word_ratio + (1|ID) + (1|exam_num), data = df_reg_ratio_transit_mood)
+summary(m7_transit_neg_gad_score_reg)
+```
+```{r}
+m7_transit_neg_gad_score_reg_int <- lmer(Pos_to_Neg ~ GAD_score + reg_ratio + GAD_score*reg_ratio + (1|ID) + (1|exam_num), data = df_reg_ratio_transit_mood)
+summary(m7_transit_neg_gad_score_reg_int)
+```
+
+### regulation after pos adn neg Phrasewise - Transition
+```{r}
+df_senti_full_nona <- df_senti_full %>% filter(!is.na(api_val))
+df_phrase_transition <- df_senti_full_nona %>%
+  arrange(ID, exam_num, ResponseNumber) %>%
+  group_by(ID, exam_num, ResponseNumber) %>%
+  mutate(
+    post_type = lead(label_api_text)
+  ) %>%
+  ungroup()
+
+expr_phrase_df <- df_phrase_transition %>%
+  filter(label_api_text == "Expression")
+
+phrase_transition_summary <- expr_phrase_df %>%
+  group_by(api_val) %>%
+  summarise(
+    n_expression = n(),
+    n_to_regulation = sum(post_type == "Regulation", na.rm = TRUE),
+    proportion = n_to_regulation / n_expression
+  )
+phrase_transition_summary
+
+```
+
+```{r}
+expr_phrase_df <- expr_phrase_df %>% dplyr::mutate(next_reg = ifelse(post_type == "Regulation", 1, 0),
+                                                   current_valence = factor(api_val, 
+                                                                            levels = c("NEGATIVE", "POSITIVE","MIXED","NEUTRAL")))
+```
+
+```{r}
+library(brms)
+
+m_valence_reg_transition <- brm(
+  next_reg ~ current_valence +
+    (1 | ID) +
+    (1 | exam_num),
+  family = bernoulli(link = "logit"),
+  data = expr_phrase_df,
+  chains = 4,
+  cores = 4,
+  iter = 4000
+)
+summary(m_valence_reg_transition)
+```
+```{r}
+emm <- emmeans(
+  m_valence_reg_transition,
+  ~ current_valence,
+  type = "response"
+)
+
+emm
+pairs(emm)
+```
+posterior probability
+```{r}
+newdat <- data.frame(
+  current_valence = factor(
+    c("NEGATIVE", "POSITIVE", "NEUTRAL", "MIXED"),
+    levels = levels(expr_phrase_df$current_valence)
+  )
+)
+
+p <- posterior_epred(
+  m_valence_reg_transition,
+  newdata = newdat,
+  re_formula = NA
+)
+```
+```{r}
+# assuming columns are:
+# 1 Negative
+# 2 Positive
+# 3 Neutral
+# 4 Mixed
+
+# Estimated probabilities
+apply(p, 2, median)
+
+# 95% credible intervals
+apply(p, 2, quantile, probs = c(.025, .975))
+```
+
+```{r}
+diff_neg_pos <- p[, 1] - p[, 2]
+
+quantile(diff_neg_pos, c(.025, .5, .975))
+
+median(diff_neg_pos>0)
+mean(diff_neg_pos > 0)
+```
+```{r}
+plot_df <- data.frame(
+  current_valence = newdat$current_valence,
+  predicted = apply(p, 2, median),
+  lower = apply(p, 2, quantile, probs = 0.025),
+  upper = apply(p, 2, quantile, probs = 0.975)
+)
+
+plot_df
+```
+```{r}
+ggplot(
+  plot_df,
+  aes(
+    x = current_valence,
+    y = predicted,
+    color = current_valence
+  )
+) +
+  geom_point(size = 3.5) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.12,
+    linewidth = 0.9
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  labs(
+    x = "Expression Valence",
+    y = "Probability of Subsequent Regulation",
+    title = "Probability of Regulation Following Emotional Expression"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "none"
+  )
+```
+
+
+```{r}
+ggplot(phrase_transition_summary,
+       aes(x = api_val,
+           y = proportion,
+           fill =  api_val)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = scales::percent(proportion)),
+            vjust = -0.4) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Expression Valence",
+    y = "Probability that the Next Phrase is Regulation"
+  ) +
+  theme_classic()
+```
+#### transition modelling
+```{r}
+df_phrase_transition <- df_phrase_transition %>% 
+  arrange(ID, exam_num, ResponseNumber) %>%
+  group_by(ID, exam_num, ResponseNumber) %>%
+  mutate(
+    prev_type = lag(label_api_text),
+    prev_val   = lag(api_val),
+    next_val   = lead(api_val)
+  ) %>%
+  ungroup()
+
+df_phrase_transit_reg <- df_phrase_transition %>%
+  filter(label_api_text == "Regulation")
+```
+
+```{r}
+df_phrase_transit_reg$next_val <- relevel(
+  factor(df_phrase_transit_reg$next_val),
+  ref = "NEUTRAL")
+m_transit_after_reg <- brm(
+  next_val ~ prev_val +
+    (1 | ID) +
+    (1 | exam_num),
+  family = categorical(),
+  data = df_phrase_transit_reg
+)
+summary(m_transit_after_reg)
+```
+```{r}
+df_phrase_transit_reg <- df_phrase_transit_reg %>%
+  mutate(
+    became_neutral = next_val == "neutral"
+  )
+
+m2_transit_neutral_after_reg <- brm(
+  became_neutral ~ prev_val +
+    (1 | ID) +
+    (1 | exam_num),
+  family = bernoulli(),
+  data = df_phrase_transit_reg
+)
+summary(m2_transit_neutral_after_reg)
+```
+
+
+### Blockwise - Transition between negative - neutral/positive
+
+```{r}
+library(dplyr)
+expr_df <- df_pre_post_collapsed %>%
+  filter(text_type == "Expression")
+
+transition_summary <- expr_df %>%
+  group_by(block_sentiment) %>%
+  summarise(
+    n_expression = n(),
+    n_to_regulation = sum(post_type == "Regulation", na.rm = TRUE),
+    proportion = n_to_regulation / n_expression
+  )
+transition_summary
+```
+```{r}
+ggplot(transition_summary,
+       aes(x = block_sentiment,
+           y = proportion,
+           fill =  block_sentiment)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = scales::percent(proportion)),
+            vjust = -0.4) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Expression Valence",
+    y = "Probability that the Next Segment is Regulation"
+  ) +
+  theme_classic()
+```
+
+```{r}
+df_transitions_neg <- df_pre_post_collapsed %>% filter(block_sentiment == "NEGATIVE") %>%
+  dplyr::mutate(transition_type = case_when(
+    post_block_senti == "POSITIVE" ~ "neg_pos",
+    post_block_senti == "NEUTRAL" ~ "neg_neu",
+    TRUE ~ NA_character_
+  )) %>% filter(!is.na(transition_type))
+```
+
+```{r}
+df_transition_neg_counts <- df_transitions_neg %>%
+  dplyr::group_by(ID, exam_num) %>%
+  summarise(
+    Neg_to_Pos = sum(transition_type == "neg_pos"),
+    Neg_to_Pos = sum(transition_type == "neg_neu"),
+    .groups = "drop"
+  )
+```
+```{r}
+df_transition_neg_counts$ID <- as.integer(df_transition_neg_counts$ID)
+df_transition_neg_counts$exam_num <- as.integer(df_transition_neg_counts$exam_num)
+df_transition_neg_counts_gad <- inner_join(df_transition_neg_counts, df_mood, by = "ID")
+df_transition_neg_counts_gad_PE <- inner_join(df_transition_neg_counts_gad, df_PE, by = c("ID", "exam_num"))
+```
+####Neg - Pos
+```{r}
+m8_transit_neg_pos_gad_score <- lmer(Neg_to_Pos ~ GAD_score + (1|ID) + (1|exam_num), data = df_transition_neg_counts_gad_PE)
+summary(m8_transit_neg_pos_gad_score)
+```
+```{r}
+m8_transit_neg_pos_EVPE <- lmer(Neg_to_Pos ~ EVPE + (1|ID) + (1|exam_num), data = df_transition_neg_counts_gad_PE)
+summary(m8_transit_neg_pos_EVPE)
+```
+
+### current_senti ~ GAD +reg_ratio+PE
+```{r}
+
+```
+
+```{r}
+moodScale_list <- c(
+  "GAD_score",
+  "EPSI_score",
+  "EPSI_binge",       
+  "EPSI_purge",       
+  "EPSI_restr",      
+  "EPSI_exce",          
+  "SIR_score",          
+  "SIR_disc",          
+  "SIR_acq",            
+  "SIAS_score",         
+  "OCIR_score",         
+  "OCIR_check",         
+  "OCIR_order",
+  "OCIR_wash",          
+  "OCIR_obs",
+  "NIDA_ALC_score",
+  "NIDA_DRUGS_score",
+  "ASRM_score",         
+  "PQB_score",          
+  "PQB_distress_score",
+  "MSPSS_score",
+  "MSPSS_so",           
+  "MSPSS_fmly",         
+  "MSPSS_frnd",         
+  "ERQ_score",         
+  "ERQ_rep",            
+  "ERQ_sup",            
+  "PHQ_score"
+)
+
+```
+
+```{r}
+aNameSig="/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/cor/pre_post_reg_mood/significant"
+dir.create(aNameSig)
+currentX = "pre_post_reg_mean"
+for(currentY in moodScale_list){
+  mydata = df_pre_post_collapsed_reg_mood
+  fname=sprintf('/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/cor/pre_post_reg_mood/Correl_%s_%s.pdf', currentX, currentY)
+  fname_sig=sprintf('/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/cor/pre_post_reg_mood/significant/Correl_%s_%s.pdf',currentX, currentY)
+  plotTitle=sprintf('%s_vs_%s',currentX, currentY)
+  xlab = currentX
+  ylab= currentY
+  myScatterPlot_SAS(mydata,fname, currentX, currentY, xlab, ylab, plotTitle,fname_sig)
+}
+
+```
+
+### Neuroticism correlation
+```{r}
+df_pre_post_collapsed_reg_neuro <- inner_join(df_pre_post_collapsed_reg_tmp, df_neuro, by = "ID")
+
+df_pre_post_collapsed_reg_neuro_without_max <- df_pre_post_collapsed_reg_neuro %>%
+  group_by(ID) %>%
+  mutate() %>%
+  ungroup()
+
+print(df_without_max)
+```
+
+```{r}
+df_label_ratio_per_exam_neuro <- inner_join(df_label_ratio_wide_per_exam, df_neuro, by = "ID")
+```
+```{r}
+plot(df_label_ratio_per_exam_neuro$negative_emotionality, df_label_ratio_per_exam_neuro$reg_exam_avg )
+```
+```{r}
+m1_reg_neuro_model <- lmer(reg_exam_avg ~ negative_emotionality + 0+ (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro)
+
+summary(m1_reg_neuro_model)
+```
+
+```{r}
+# Check with aaron
+quadratic_reg_model <- lmer(reg_exam_avg ~ negative_emotionality+I(negative_emotionality^2) + 0+ (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro)
+
+summary(quadratic_reg_model)
+# pp_check(quadratic_model)
+```
+```{r}
+quadratic_exp_model <- lmer(exp_exam_avg ~ negative_emotionality+I(negative_emotionality^2) + (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro)
+
+summary(quadratic_exp_model)
+```
+```{r}
+quadratic_nei_model <- lmer(nei_exam_avg ~ negative_emotionality+I(negative_emotionality^2) + (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro)
+
+summary(quadratic_nei_model)
+```
+#### Adding PE
+```{r}
+df_label_ratio_per_exam_neuro_PE <- inner_join(df_label_ratio_per_exam_neuro, df_PE, by = c("ID", "exam_num"))
+```
+
+```{r}
+m1_reg_ratio_neuro_PE_exam <- lmer(reg_exam_avg ~ PE_2+negative_emotionality.y + 0+ (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro_PE)
+summary(m1_reg_ratio_neuro_PE_exam)
+```
+```{r}
+pp_check(m1_reg_ratio_neuro_PE_exam)
+```
+
+```{r}
+m1_reg_ratio_neuro_PE_val_exam <- lmer(reg_exam_avg ~ PE_2_val + 0+ (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro_PE)
+summary(m1_reg_ratio_neuro_PE_val_exam)
+```
+```{r}
+pp_check(m1_reg_ratio_neuro_PE_val_exam)
+```
+
+```{r}
+m1_exp_ratio_neuro_PE_val_exam <- lmer(exp_exam_avg ~ PE_2_val*PE_2_mag + 0+ (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro_PE)
+
+summary(m1_exp_ratio_neuro_PE_val_exam)
+```
+```{r}
+m1_nei_ratio_neuro_PE_val_exam <- lmer(nei_exam_avg ~ PE_2_val*PE_2_mag + 0+ (1|ID)+(1|exam_num), data = df_label_ratio_per_exam_neuro_PE)
+
+summary(m1_nei_ratio_neuro_PE_val_exam)
+```
+```{r}
+pp_check(m1_nei_ratio_neuro_PE_val_exam)
+```
+
+#### Adding word count
+```{r}
+# Summarize word count based on exam and text_label
+df_word_acount_per_exam <- df_response_full %>% group_by(ID, exam_num, label_api_text) %>% summarise(word_count_sum = sum(word_count)) %>% ungroup()
+```
+```{r}
+df_word_acount_per_exam_wide <- df_word_acount_per_exam %>%
+  group_by(ID, exam_num, label_api_text) %>%
+  pivot_wider(
+    names_from = label_api_text,
+    values_from = word_count_sum,
+    names_glue = "{label_api_text}_count",  # Format column names
+    values_fill = 0  # Replace NA with 0 if a label is missing
+  )
+df_word_acount_per_exam_wide$exam_num <- as.factor(df_word_acount_per_exam_wide$exam_num)
+```
+
+```{r}
+df_label_ratio_per_exam_neuro_PE_count <- inner_join(df_label_ratio_per_exam_neuro_PE, df_word_acount_per_exam_wide, by = c("ID", "exam_num"))
+```
+```{r}
+df_label_ratio_per_exam_neuro_PE_count <- df_label_ratio_per_exam_neuro_PE_count %>% group_by(ID, exam_num) %>% mutate(total_count = Expression_count+ Regulation_count+ Neither_count) %>% ungroup()
+```
+
+```{r}
+m1_PE_val_total_count <- lmer(total_count ~ PE_2_val + 0+ (1|ID) + (1|exam_num), data = df_label_ratio_per_exam_neuro_PE_count)
+summary(m1_PE_val_total_count)
+pp_check(m1_PE_val_total_count)
+```
+
+```{r}
+m2_PE_total_count <- lmer(total_count ~ PE_2 + 0+ (1|ID) + (1|exam_num), data = df_label_ratio_per_exam_neuro_PE_count)
+summary(m2_PE_total_count)
+```
+```{r}
+m2_PE_val_mag_total_count <- lmer(total_count ~ PE_2_val * PE_2_mag + 0+ (1|ID) + (1|exam_num), data = df_label_ratio_per_exam_neuro_PE_count)
+summary(m2_PE_val_mag_total_count)
+pp_check(m2_PE_val_mag_total_count)
+```
+#### Adding regulation count
+```{r}
+m3_PE_reg_count <- lmer(Regulation_count ~ PE_2 + 0+ (1|ID) + (1|exam_num), data = df_label_ratio_per_exam_neuro_PE_count)
+summary(m3_PE_reg_count)
+```
+
+```{r}
+m3_PE_val_reg_count <- lmer(Regulation_count ~ PE_2_val + 0+ (1|ID) + (1|exam_num), data = df_label_ratio_per_exam_neuro_PE_count)
+summary(m3_PE_val_reg_count)
+```
+```{r}
+pp_check(m3_PE_val_reg_count)
+```
+
+#### pre_post_reg_mean vs. neuroticism
+```{r}
+cor.test (df_pre_post_collapsed_reg_neuro$negative_emotionality, df_pre_post_collapsed_reg_neuro$pre_post_reg_mean)
+
+```
+
+
+```{r}
+# plot(df_pre_post_collapsed_reg_neuro$pre_post_reg_mean, df_pre_post_collapsed_reg_neuro$negative_emotionality)
+currentX = "negative_emotionality"
+currentY = "pre_post_reg_mean"
+xlab = "neuroticism score"
+ylab = "pre-post regulation score"
+plotTitle = "Neuroticism vs. Pre-post reg score"
+fname=sprintf('/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/cor/pre_post_reg_neu/Correl_%s_%s.pdf', currentX, currentY)
+  fname_sig=sprintf('/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/cor/pre_post_reg_neu/significant/Correl_%s_%s.pdf',currentX, currentY)
+
+myScatterPlot_SAS(df_pre_post_collapsed_reg_neuro,fname, currentX, currentY, xlab, ylab, plotTitle,fname_sig)
+
+```
+
+# sentiment ~ EVPE + PE_2
+```{r}
+df_resp_senti_PE <- inner_join(df_resp_senti, df_PE, by = c("ID", "exam_num"))
+```
+```{r}
+resp_senti_EVPE_PE_2_time <- lmer(sentiment ~ EVPE*time_since_grade_reveal_mins + PE_2*time_since_grade_reveal_mins + (1|ID)+(1|exam_num), data = df_resp_senti_PE)
+summary(resp_senti_EVPE_PE_2_time)
+```
+```{r}
+plot_model(resp_senti_EVPE_PE_2_time, type = "int", terms = c("EVPE", "time_since_grade_reveal_mins"))
+```
+```{r}
+EVPE_time_plot_df <- ggpredict(
+  resp_senti_EVPE_PE_2_time,
+  terms = c("time_since_grade_reveal_mins [all]", "EVPE [-10,10]")
+)
+
+ggplot(EVPE_time_plot_df, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+  labs(
+    x = "Time since grade reveal (mins)",
+    y = "Predicted sentiment",
+    color = "EVPE",
+    fill = "EVPE",
+    title = "Interaction of EVPE and time on sentiment"
+  ) +
+  theme_classic()
+```
+```{r}
+PE2_time_plot_df <- ggpredict(
+  resp_senti_EVPE_PE_2_time,
+  terms = c("time_since_grade_reveal_mins [all]", "PE_2 [-10,10]")
+)
+
+ggplot(PE2_time_plot_df, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+  labs(
+    x = "Time since grade reveal (mins)",
+    y = "Predicted sentiment",
+    color = "PE_2",
+    fill = "PE_2",
+    title = "Interaction of PE_2 and time on sentiment"
+  ) +
+  theme_classic()
+```
+
+```{r}
+resp_senti_EVPE_PE_2 <- lmer(sentiment ~ EVPE + PE_2 + (1|ID)+(1|exam_num), data = df_resp_senti_PE)
+summary(resp_senti_EVPE_PE_2)
+```
+
+
+```{r}
+resp_senti_EVPE_PE_2_int <- lmer(sentiment ~ EVPE * PE_2 + (1|ID)+(1|exam_num), data = df_resp_senti_PE)
+summary(resp_senti_EVPE_PE_2_int)
+```
+```{r}
+pp_check(resp_senti_EVPE_PE_2_int)
+```
+```{r}
+plot_model(resp_senti_EVPE_PE_2_int, type = "int")
+```
+
+```{r}
+anova(resp_senti_EVPE_PE_2, resp_senti_EVPE_PE_2_int)
+```
+```{r}
+library(ggeffects)
+library(ggplot2)
+
+# Generate predicted values
+plot_df <- ggpredict(
+  resp_senti_EVPE_PE_2_int,
+  terms = c("EVPE [all]", "PE_2 [-10,10]")
+)
+
+# Plot
+ggplot(plot_df, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+  labs(
+    x = "EVPE",
+    y = "Predicted sentiment",
+    color = "PE_2",
+    fill = "PE_2",
+    title = "Interaction effect of EVPE and PE_2 on sentiemnt"
+  ) +
+  theme_classic()
+```
+# clean_times
+```{r}
+df_resp_senti_PE_cleaned <- df_resp_senti_PE %>% filter(time_since_grade_reveal_mins< 1000)
+```
+
+```{r}
+resp_senti_EVPE_PE_2_time_cleaned <- lmer(sentiment ~ EVPE*time_since_grade_reveal_mins + PE_2*time_since_grade_reveal_mins + (1|ID)+(1|exam_num), data = df_resp_senti_PE_cleaned)
+summary(resp_senti_EVPE_PE_2_time_cleaned)
+```
+```{r}
+EVPE_time_plot_df_cleaned <- ggpredict(
+  resp_senti_EVPE_PE_2_time_cleaned,
+  terms = c("time_since_grade_reveal_mins [all]", "EVPE [-10,1$0]")
+)
+
+ggplot(EVPE_time_plot_df_cleaned, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+  labs(
+    x = "Time since grade reveal (mins)",
+    y = "Predicted sentiment",
+    color = "EVPE",
+    fill = "EVPE",
+    title = "Interaction of EVPE and time on sentiment"
+  ) +
+  theme_classic()
+```
+
+```{r}
+PE2_time_plot_df_cleaned <- ggpredict(
+  resp_senti_EVPE_PE_2_time_cleaned,
+  terms = c("time_since_grade_reveal_mins [all]", "PE_2 [-10,10]")
+)
+
+ggplot(PE2_time_plot_df_cleaned, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+  labs(
+    x = "Time since grade reveal (mins)",
+    y = "Predicted sentiment",
+    color = "PE_2",
+    fill = "PE_2",
+    title = "Interaction of PE_2 and time on sentiment"
+  ) +
+  theme_classic()
+```
+## Binary models
+```{r}
+df_resp_senti_PE_cleaned$EVPE_val <- factor(
+  df_resp_senti_PE_cleaned$EVPE_val,
+  levels = c("negative", "positive")
+)
+
+df_resp_senti_PE_cleaned$PE_2_val <- factor(
+  df_resp_senti_PE_cleaned$PE_2_val,
+  levels = c("negative", "positive")
+)
+```
+
+```{r}
+resp_senti_bi_EVPE_PE_2_cleaned <- lmer(sentiment ~ EVPE_val*EVPE_mag + PE_2_val*PE_2_mag + (1|ID)+(1|exam_num), data = df_resp_senti_PE_cleaned)
+summary(resp_senti_bi_EVPE_PE_2_cleaned)
+```
+### Plot
+```{r}
+library(lme4)
+library(ggplot2)
+
+# 1) prediction grid
+newdat_EVPE <- expand.grid(
+  EVPE_mag = seq(
+    min(df_resp_senti_PE_cleaned$EVPE_mag, na.rm = TRUE),
+    max(df_resp_senti_PE_cleaned$EVPE_mag, na.rm = TRUE),
+    length.out = 100
+  ),
+  EVPE_val = levels(df_resp_senti_PE_cleaned$EVPE_val),
+  PE_2_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$PE_2_val)),
+  PE_2_mag = mean(df_resp_senti_PE_cleaned$PE_2_mag, na.rm = TRUE)
+)
+
+# make sure factor levels match the fitted model
+newdat_EVPE$EVPE_val <- factor(newdat_EVPE$EVPE_val, levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+newdat_EVPE$PE_2_val <- factor(newdat_EVPE$PE_2_val, levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+
+# 2) fixed-effects design matrix
+X_EVPE <- model.matrix(
+  delete.response(terms(resp_senti_bi_EVPE_PE_2_cleaned)),
+  newdat_EVPE
+)
+
+# 3) fitted values
+beta <- fixef(resp_senti_bi_EVPE_PE_2_cleaned)
+newdat_EVPE$fit <- as.vector(X_EVPE %*% beta)
+
+# 4) standard errors of fitted values
+V <- vcov(resp_senti_bi_EVPE_PE_2_cleaned)
+newdat_EVPE$se <- sqrt(diag(X_EVPE %*% V %*% t(X_EVPE)))
+
+# 5) 95% CI
+newdat_EVPE$lwr <- newdat_EVPE$fit - 1.96 * newdat_EVPE$se
+newdat_EVPE$upr <- newdat_EVPE$fit + 1.96 * newdat_EVPE$se
+
+# 6) plot
+ggplot(newdat_EVPE, aes(x = EVPE_mag, y = fit, color = EVPE_val, fill = EVPE_val)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+  labs(
+    x = "EVPE magnitude",
+    y = "Predicted sentiment",
+    color = "EVPE valence",
+    fill = "EVPE valence",
+    title = "EVPE valence × EVPE magnitude"
+  ) +
+  theme_classic()
+```
+
+```{r}
+newdat_PE2 <- expand.grid(
+  PE_2_mag = seq(
+    min(df_resp_senti_PE_cleaned$PE_2_mag, na.rm = TRUE),
+    max(df_resp_senti_PE_cleaned$PE_2_mag, na.rm = TRUE),
+    length.out = 100
+  ),
+  PE_2_val = levels(df_resp_senti_PE_cleaned$PE_2_val),
+  EVPE_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$EVPE_val)),
+  EVPE_mag = mean(df_resp_senti_PE_cleaned$EVPE_mag, na.rm = TRUE)
+)
+
+newdat_PE2$PE_2_val <- factor(newdat_PE2$PE_2_val, levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+newdat_PE2$EVPE_val <- factor(newdat_PE2$EVPE_val, levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+
+X_PE2 <- model.matrix(
+  delete.response(terms(resp_senti_bi_EVPE_PE_2_cleaned)),
+  newdat_PE2
+)
+
+beta <- fixef(resp_senti_bi_EVPE_PE_2_cleaned)
+newdat_PE2$fit <- as.vector(X_PE2 %*% beta)
+
+V <- vcov(resp_senti_bi_EVPE_PE_2_cleaned)
+newdat_PE2$se <- sqrt(diag(X_PE2 %*% V %*% t(X_PE2)))
+
+newdat_PE2$lwr <- newdat_PE2$fit - 1.96 * newdat_PE2$se
+newdat_PE2$upr <- newdat_PE2$fit + 1.96 * newdat_PE2$se
+
+ggplot(newdat_PE2, aes(x = PE_2_mag, y = fit, color = PE_2_val, fill = PE_2_val)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+  labs(
+    x = "PE_2 magnitude",
+    y = "Predicted sentiment",
+    color = "PE_2 valence",
+    fill = "PE_2 valence",
+    title = "PE_2 valence × PE_2 magnitude"
+  ) +
+  theme_classic()
+```
+
+```{r}
+resp_senti_bi_EVPE_PE_2_time_cleaned <- lmer(sentiment ~ EVPE_val*EVPE_mag*time_since_grade_reveal_mins + PE_2_val*PE_2_mag*time_since_grade_reveal_mins + (1|ID)+(1|exam_num), data = df_resp_senti_PE_cleaned)
+summary(resp_senti_bi_EVPE_PE_2_time_cleaned)
+```
+
+```{r}
+# fixed-effect design matrix helper
+fixed_form <- delete.response(terms(nobars(formula(resp_senti_bi_EVPE_PE_2_time_cleaned))))
+beta <- fixef(resp_senti_bi_EVPE_PE_2_time_cleaned)
+V <- vcov(resp_senti_bi_EVPE_PE_2_time_cleaned)
+
+time_seq <- seq(
+  min(df_resp_senti_PE_cleaned$time_since_grade_reveal_mins, na.rm = TRUE),
+  max(df_resp_senti_PE_cleaned$time_since_grade_reveal_mins, na.rm = TRUE),
+  length.out = 100
+)
+
+mag_vals <- c(0, 10, 20)
+```
+
+```{r}
+newdat_PE2 <- expand.grid(
+  time_since_grade_reveal_mins = time_seq,
+  PE_2_mag = mag_vals,
+  PE_2_val = levels(df_resp_senti_PE_cleaned$PE_2_val),
+  EVPE_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$EVPE_val)),
+  EVPE_mag = 0
+)
+
+newdat_PE2$PE_2_val <- factor(newdat_PE2$PE_2_val,
+                              levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+newdat_PE2$EVPE_val <- factor(newdat_PE2$EVPE_val,
+                              levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+
+X_PE2 <- model.matrix(fixed_form, newdat_PE2)
+newdat_PE2$fit <- as.vector(X_PE2 %*% beta)
+newdat_PE2$se <- sqrt(diag(X_PE2 %*% V %*% t(X_PE2)))
+newdat_PE2$lwr <- newdat_PE2$fit - 1.96 * newdat_PE2$se
+newdat_PE2$upr <- newdat_PE2$fit + 1.96 * newdat_PE2$se
+
+newdat_PE2$panel_type <- "PE_2"
+newdat_PE2$mag_facet <- factor(
+  newdat_PE2$PE_2_mag,
+  levels = mag_vals,
+  labels = c("PE_2_mag = 0", "PE_2_mag = 10", "PE_2_mag = 20")
+)
+newdat_PE2$valence <- newdat_PE2$PE_2_val
+```
+```{r}
+newdat_EVPE <- expand.grid(
+  time_since_grade_reveal_mins = time_seq,
+  EVPE_mag = mag_vals,
+  EVPE_val = levels(df_resp_senti_PE_cleaned$EVPE_val),
+  PE_2_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$PE_2_val)),
+  PE_2_mag = 0
+)
+
+newdat_EVPE$EVPE_val <- factor(newdat_EVPE$EVPE_val,
+                               levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+newdat_EVPE$PE_2_val <- factor(newdat_EVPE$PE_2_val,
+                               levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+
+X_EVPE <- model.matrix(fixed_form, newdat_EVPE)
+newdat_EVPE$fit <- as.vector(X_EVPE %*% beta)
+newdat_EVPE$se <- sqrt(diag(X_EVPE %*% V %*% t(X_EVPE)))
+newdat_EVPE$lwr <- newdat_EVPE$fit - 1.96 * newdat_EVPE$se
+newdat_EVPE$upr <- newdat_EVPE$fit + 1.96 * newdat_EVPE$se
+
+newdat_EVPE$panel_type <- "EVPE"
+newdat_EVPE$mag_facet <- factor(
+  newdat_EVPE$EVPE_mag,
+  levels = mag_vals,
+  labels = c("EVPE_mag = 0", "EVPE_mag = 10", "EVPE_mag = 20")
+)
+newdat_EVPE$valence <- newdat_EVPE$EVPE_val
+```
+
+```{r}
+plot_dat <- bind_rows(
+  newdat_PE2 %>% select(time_since_grade_reveal_mins, fit, lwr, upr, panel_type, mag_facet, valence),
+  newdat_EVPE %>% select(time_since_grade_reveal_mins, fit, lwr, upr, panel_type, mag_facet, valence)
+)
+```
+```{r}
+plot_dat$time_hours <- plot_dat$time_since_grade_reveal_mins / 60
+```
+
+```{r}
+library(lme4)
+library(ggplot2)
+library(dplyr)
+
+# fixed-effect setup
+fixed_form <- delete.response(terms(nobars(formula(resp_senti_bi_EVPE_PE_2_time_cleaned))))
+beta <- fixef(resp_senti_bi_EVPE_PE_2_time_cleaned)
+V <- vcov(resp_senti_bi_EVPE_PE_2_time_cleaned)
+
+time_seq <- seq(
+  min(df_resp_senti_PE_cleaned$time_since_grade_reveal_mins, na.rm = TRUE),
+  max(df_resp_senti_PE_cleaned$time_since_grade_reveal_mins, na.rm = TRUE),
+  length.out = 100
+)
+
+mag_vals <- c(0, 10, 20)
+
+# -----------------
+# PE_2 row
+# -----------------
+newdat_PE2 <- expand.grid(
+  time_since_grade_reveal_mins = time_seq,
+  PE_2_mag = mag_vals,
+  PE_2_val = levels(df_resp_senti_PE_cleaned$PE_2_val),
+  EVPE_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$EVPE_val)),
+  EVPE_mag = 0
+)
+
+newdat_PE2$PE_2_val <- factor(newdat_PE2$PE_2_val,
+                              levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+newdat_PE2$EVPE_val <- factor(newdat_PE2$EVPE_val,
+                              levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+
+X_PE2 <- model.matrix(fixed_form, newdat_PE2)
+newdat_PE2$fit <- as.vector(X_PE2 %*% beta)
+newdat_PE2$se  <- sqrt(diag(X_PE2 %*% V %*% t(X_PE2)))
+newdat_PE2$lwr <- newdat_PE2$fit - 1.96 * newdat_PE2$se
+newdat_PE2$upr <- newdat_PE2$fit + 1.96 * newdat_PE2$se
+
+newdat_PE2$row_var  <- "PE_2"
+newdat_PE2$mag_plot <- factor(newdat_PE2$PE_2_mag, levels = c(0, 10, 20))
+newdat_PE2$valence  <- newdat_PE2$PE_2_val
+
+# -----------------
+# EVPE row
+# -----------------
+newdat_EVPE <- expand.grid(
+  time_since_grade_reveal_mins = time_seq,
+  EVPE_mag = mag_vals,
+  EVPE_val = levels(df_resp_senti_PE_cleaned$EVPE_val),
+  PE_2_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$PE_2_val)),
+  PE_2_mag = 0
+)
+
+newdat_EVPE$EVPE_val <- factor(newdat_EVPE$EVPE_val,
+                               levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+newdat_EVPE$PE_2_val <- factor(newdat_EVPE$PE_2_val,
+                               levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+
+X_EVPE <- model.matrix(fixed_form, newdat_EVPE)
+newdat_EVPE$fit <- as.vector(X_EVPE %*% beta)
+newdat_EVPE$se  <- sqrt(diag(X_EVPE %*% V %*% t(X_EVPE)))
+newdat_EVPE$lwr <- newdat_EVPE$fit - 1.96 * newdat_EVPE$se
+newdat_EVPE$upr <- newdat_EVPE$fit + 1.96 * newdat_EVPE$se
+
+newdat_EVPE$row_var  <- "EVPE"
+newdat_EVPE$mag_plot <- factor(newdat_EVPE$EVPE_mag, levels = c(0, 10, 20))
+newdat_EVPE$valence  <- newdat_EVPE$EVPE_val
+
+# -----------------
+# combine
+# -----------------
+plot_dat <- bind_rows(
+  newdat_EVPE %>%
+    transmute(time_since_grade_reveal_mins, fit, lwr, upr, row_var, mag_plot, valence),
+  newdat_PE2 %>%
+    transmute(time_since_grade_reveal_mins, fit, lwr, upr, row_var, mag_plot, valence)
+)
+
+plot_dat$time_hours <- plot_dat$time_since_grade_reveal_mins / 60
+plot_dat$row_var <- factor(plot_dat$row_var, levels = c("EVPE", "PE_2"))
+plot_dat$mag_plot <- factor(plot_dat$mag_plot, levels = c(0, 10, 20))
+
+# -----------------
+# plot: 3 columns x 2 rows
+# -----------------
+ggplot(plot_dat, aes(x = time_hours, y = fit, color = valence, fill = valence)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1.2) +
+  facet_grid(
+    rows = vars(row_var),
+    cols = vars(mag_plot),
+    labeller = labeller(
+      row_var = c(EVPE = "EVPE", PE_2 = "PE_2"),
+      mag_plot = c(`0` = "mag = 0", `10` = "mag = 10", `20` = "mag = 20")
+    )
+  ) +
+  scale_color_manual(
+    values = c("negative" = "#F8766D", "positive" = "#00BFC4"),
+    labels = c("negative" = "Negative", "positive" = "Positive")
+  ) +
+  scale_fill_manual(
+    values = c("negative" = "#F8766D", "positive" = "#00BFC4"),
+    labels = c("negative" = "Negative", "positive" = "Positive")
+  ) +
+  labs(
+    x = "Hours Since Seeing Grade",
+    y = "Predicted sentiment",
+    color = NULL,
+    fill = NULL
+  ) +
+  theme_bw(base_size = 16)
+```
+##Spline model
+```{r}
+library(lme4)
+library(splines)
+
+resp_senti_bi_EVPE_PE_2_time_spline <- lmer(
+  sentiment ~ 
+    EVPE_val * EVPE_mag * ns(time_since_grade_reveal_mins, df = 3) +
+    PE_2_val * PE_2_mag * ns(time_since_grade_reveal_mins, df = 3) +
+    (1 | ID) + (1 | exam_num),
+  data = df_resp_senti_PE_cleaned
+)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(splines)
+
+time_seq <- seq(
+  min(df_resp_senti_PE_cleaned$time_since_grade_reveal_mins, na.rm = TRUE),
+  max(df_resp_senti_PE_cleaned$time_since_grade_reveal_mins, na.rm = TRUE),
+  length.out = 200
+)
+
+mag_vals <- c(0, 10, 20)
+```
+
+```{r}
+newdat_EVPE <- expand.grid(
+  time_since_grade_reveal_mins = time_seq,
+  EVPE_mag = mag_vals,
+  EVPE_val = levels(df_resp_senti_PE_cleaned$EVPE_val),
+  PE_2_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$PE_2_val)),
+  PE_2_mag = 0
+)
+
+newdat_EVPE$EVPE_val <- factor(newdat_EVPE$EVPE_val,
+                               levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+newdat_EVPE$PE_2_val <- factor(newdat_EVPE$PE_2_val,
+                               levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+
+newdat_EVPE$fit <- predict(
+  resp_senti_bi_EVPE_PE_2_time_spline,
+  newdata = newdat_EVPE,
+  re.form = NA
+)
+
+newdat_EVPE$row_var  <- "EVPE"
+newdat_EVPE$mag_plot <- factor(newdat_EVPE$EVPE_mag, levels = c(0, 10, 20))
+newdat_EVPE$valence  <- newdat_EVPE$EVPE_val
+```
+
+```{r}
+newdat_PE2 <- expand.grid(
+  time_since_grade_reveal_mins = time_seq,
+  PE_2_mag = mag_vals,
+  PE_2_val = levels(df_resp_senti_PE_cleaned$PE_2_val),
+  EVPE_val = factor("negative", levels = levels(df_resp_senti_PE_cleaned$EVPE_val)),
+  EVPE_mag = 0
+)
+
+newdat_PE2$PE_2_val <- factor(newdat_PE2$PE_2_val,
+                              levels = levels(df_resp_senti_PE_cleaned$PE_2_val))
+newdat_PE2$EVPE_val <- factor(newdat_PE2$EVPE_val,
+                              levels = levels(df_resp_senti_PE_cleaned$EVPE_val))
+
+newdat_PE2$fit <- predict(
+  resp_senti_bi_EVPE_PE_2_time_spline,
+  newdata = newdat_PE2,
+  re.form = NA
+)
+
+newdat_PE2$row_var  <- "PE_2"
+newdat_PE2$mag_plot <- factor(newdat_PE2$PE_2_mag, levels = c(0, 10, 20))
+newdat_PE2$valence  <- newdat_PE2$PE_2_val
+```
+
+```{r}
+plot_dat <- bind_rows(
+  newdat_EVPE %>%
+    transmute(time_since_grade_reveal_mins, fit, row_var, mag_plot, valence),
+  newdat_PE2 %>%
+    transmute(time_since_grade_reveal_mins, fit, row_var, mag_plot, valence)
+)
+
+plot_dat$time_hours <- plot_dat$time_since_grade_reveal_mins / 60
+plot_dat$row_var <- factor(plot_dat$row_var, levels = c("EVPE", "PE_2"))
+plot_dat$mag_plot <- factor(plot_dat$mag_plot, levels = c(0, 10, 20))
+
+ggplot(plot_dat, aes(x = time_hours, y = fit, color = valence)) +
+  geom_line(linewidth = 1.2) +
+  facet_grid(
+    rows = vars(row_var),
+    cols = vars(mag_plot),
+    labeller = labeller(
+      row_var = c(EVPE = "EVPE", PE_2 = "PE_2"),
+      mag_plot = c(`0` = "mag = 0", `10` = "mag = 10", `20` = "mag = 20")
+    )
+  ) +
+  scale_color_manual(
+    values = c("negative" = "#F8766D", "positive" = "#00BFC4"),
+    labels = c("negative" = "Negative", "positive" = "Positive")
+  ) +
+  labs(
+    x = "Hours Since Seeing Grade",
+    y = "Predicted sentiment",
+    color = NULL
+  ) +
+  theme_bw(base_size = 16)
+```
+## Aaron's code
+```{r}
+library(brms)
+df_nonlinear <- df_resp_senti_PE_cleaned
+#read in data
+
+df_nonlinear <- df_nonlinear %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+#E2 <- E2 %>% group_by(ID) %>% mutate(PA.z = scale(PA.))
+
+df_nonlinear<-df_nonlinear[abs(df_nonlinear$PE_2)<=30,]
+#df_nonlinear$timeFromDSPStart_min_round <- round(E2$timeFromDSPStart_min/30)
+#df_nonlinear<-df_nonlinear[df_nonlinear$timeFromDSPStart_min_round<16,]
+#E2$PE_1abs<- abs(E2$PE_1)
+#E2$PE_1sign <- factor(ifelse(is.na(E2$PE_1),NA,ifelse(E2$PE_1>0, 1, 0)), levels  = c("0", "1"), labels = c("Negative PE", "Positive PE") ) 
+df_nonlinear <- df_nonlinear %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, sentiment.z*-1, sentiment.z))
+#df_nonlinear <- df_nonlinear %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, NA.z*-1, NA.z) )
+
+fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE <- brm(
+  bf(sentiment.zFlipped ~ ult * exp(-(time_since_grade_reveal_mins*lambda)),
+     ult ~ 1 +  PE_2_mag * PE_2_val + EVPE_mag * EVPE_val + (1 | ID), lambda ~ 1 + PE_2_mag * PE_2_val + EVPE_mag * EVPE_val + (1 | ID),
+     nl = TRUE),
+  data = df_nonlinear, family = gaussian(),
+  prior = c(
+    prior(normal(1, 0.5), nlpar = "ult"),
+    prior(cauchy(0,1), lb = -.05, ub = 1, nlpar = "lambda")
+  ),
+  control = list(adapt_delta = 0.9), chains = 3, cores = 3, iter = 6000 
+)
+```
+```{r}
+fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE
+```
+```{r}
+loo_nonlinear <- loo(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE)
+loo_linear <- loo(resp_senti_bi_EVPE_PE_2_time_cleaned_brm)
+```
+```{r}
+loo_nonlinear
+loo_linear
+```
+```{r}
+nobs(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE)
+nobs(resp_senti_bi_EVPE_PE_2_time_cleaned_brm)
+loo_compare(loo_nonlinear, loo_linear)
+```
+
+```{r}
+A1 <- make_conditions(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, vars = c("PE_2_mag") )
+A1$PE_2_mag <- c(0, 10, 20)
+A1$cond__ <- c("PE_2_mag = 0", "PE_2_mag = 10", "PE_2_mag = 20")
+
+p1 <- conditional_effects(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:PE_2_val", conditions = A1, 
+                          spaghetti =F)
+p1<-plot(p1)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative Affect (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+
+A1b <- make_conditions(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, vars = c("EVPE_mag") )
+A1b$EVPE_mag <- c(0, 10, 20)
+A1b$cond__ <- c("EVPE_mag = 0", "EVPE_mag = 10", "EVPE_mag = 20")
+
+p2<-conditional_effects(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:EVPE_val", conditions = A1b,
+                        spaghetti =F) 
+p2<-plot(p2)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative Affect (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+grid.arrange(p1, p2)
+```
+```{r}
+p1
+```
+```{r}
+p2
+```
+```{r}
+A2 <- make_conditions(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE, vars = c("PE_2_mag") )
+A2$PE_2_mag <- c(0, 5, 10)
+A2$cond__ <- c("PE_2_mag = 0", "PE_2_mag = 5", "PE_2_mag = 10")
+
+p4<-conditional_effects(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:EVPE_val", conditions = A2,
+                        spaghetti =F) 
+p4<-plot(p4)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative Affect (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+grid.arrange(p3, p4)
+```
+```{r}
+plot(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE)
+```
+
+
+```{r}
+A2b <- make_conditions(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE, vars = c("EVPE_mag") )
+A2b$EVPE_mag <- c(1, 5, 10)
+A2b$cond__ <- c("EVPE_mag = 1", "EVPE_mag = 5", "EVPE_mag = 10")
+
+p3<-conditional_effects(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:EVPE_val", conditions = A2b,
+                        spaghetti =F) 
+p3<-plot(p3)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative Affect (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+grid.arrange(p2, p3)
+```
+
+
+```{r}
+p3
+```
+```{r}
+A2b <- make_conditions(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE, vars = c("PE_2_mag") )
+A2b$PE_2_mag <- c(1, 5, 10)
+A2b$cond__ <- c("PE_2_mag = 1", "PE_2_mag = 5", "PE_2_mag = 10")
+
+p4<-conditional_effects(fit_loss.IDraneff_SentiSign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:PE_2_val", conditions = A2b,
+                        spaghetti =F) 
+p4<-plot(p4)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative Affect (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+#grid.arrange(p2, p4)
+```
+
+
+```{r}
+p4
+```
+
+```{r}
+df_nonlinear <- df_resp_senti_PE_cleaned
+#read in data
+
+df_nonlinear <- df_nonlinear %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+#E2 <- E2 %>% group_by(ID) %>% mutate(PA.z = scale(PA.))
+
+df_nonlinear<-df_nonlinear[abs(df_nonlinear$PE_2)<=30,]
+#df_nonlinear$timeFromDSPStart_min_round <- round(E2$timeFromDSPStart_min/30)
+#df_nonlinear<-df_nonlinear[df_nonlinear$timeFromDSPStart_min_round<16,]
+#E2$PE_1abs<- abs(E2$PE_1)
+#E2$PE_1sign <- factor(ifelse(is.na(E2$PE_1),NA,ifelse(E2$PE_1>0, 1, 0)), levels  = c("0", "1"), labels = c("Negative PE", "Positive PE") ) 
+df_nonlinear <- df_nonlinear %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, sentiment.z*-1, sentiment.z))
+#df_nonlinear <- df_nonlinear %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, NA.z*-1, NA.z) )
+```
+
+```{r}
+df_nonlinear <- df_nonlinear %>%
+  mutate(
+    time_hr = time_since_grade_reveal_mins / 60,
+    PE_2_mag_z = as.numeric(scale(PE_2_mag)),
+    EVPE_mag_z = as.numeric(scale(EVPE_mag))
+  )
+
+fit_growth_decay <- brm(
+  bf(
+    sentiment.zFlipped ~ ult * exp(-time_hr * exp(loglambda)),
+
+    ult ~ 1 + PE_2_mag * PE_2_val +
+      EVPE_mag * EVPE_val + (1 | ID),
+
+    loglambda ~ 1 + PE_2_mag * PE_2_val +
+      EVPE_mag * EVPE_val + (1 | ID),
+
+    nl = TRUE
+  ),
+  data = df_nonlinear,
+  family = gaussian(),
+
+  prior = c(
+    # ultimate/initial amplitude
+    prior(normal(0, 1), nlpar = "ult", class = "b"),
+
+    # log decay rate; exp(log_lambda) is the actual lambda
+    prior(normal(-2, 1), nlpar = "loglambda", class = "b"),
+
+    # random-effect SDs
+    prior(exponential(2), nlpar = "ult", class = "sd"),
+    prior(exponential(2), nlpar = "loglambda", class = "sd"),
+
+    # residual SD
+    prior(exponential(2), class = "sigma")
+  ),
+
+  chains = 4,
+  cores = 4,
+  iter = 6000,
+  warmup = 3000,
+  control = list(
+    adapt_delta = 0.95,
+    max_treedepth = 15
+  )
+)
+```
+
+```{r}
+summary(fit_growth_decay)
+```
+
+```{r}
+plot(fit_growth_decay)
+```
+
+```{r}
+A1 <- make_conditions(fit_growth_decay, vars = c("PE_2_mag") )
+A1$PE_2_mag <- c(0, 10, 20)
+A1$cond__ <- c("PE_2_mag = 0", "PE_2_mag = 10", "PE_2_mag = 20")
+
+p1 <- conditional_effects(fit_growth_decay, effects = "time_hr:PE_2_val", conditions = A1, 
+                          spaghetti =F)
+p1<-plot(p1)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative Affect (scaled)") + ggplot2::xlab("Hrs Since Seeing Grade")
+
+A1b <- make_conditions(fit_growth_decay, vars = c("EVPE_mag") )
+A1b$EVPE_mag <- c(0, 10,20)
+A1b$cond__ <- c("EVPE_mag = 0", "EVPE_mag = 10", "EVPE_mag = 20")
+
+p2<-conditional_effects(fit_growth_decay, effects = "time_hr:EVPE_val", conditions = A1b,
+                        spaghetti =F) 
+p2<-plot(p2)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative Affect (scaled)") + ggplot2::xlab("Hrs Since Seeing Grade")
+grid.arrange(p1, p2)
+```
+
+
+
+```{r}
+df_linear <- df_resp_senti_PE_cleaned
+df_linear <- df_linear %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+df_linear <-df_linear[abs(df_linear$PE_2)<=30,]
+resp_senti_bi_EVPE_PE_2_time_cleaned_brm <- brm(
+  formula = sentiment.z ~ 
+    EVPE_val * EVPE_mag * time_since_grade_reveal_mins +
+    PE_2_val * PE_2_mag * time_since_grade_reveal_mins +
+    (1 | ID),
+  data = df_linear,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  seed = 1234
+)
+```
+
+```{r}
+resp_senti_bi_EVPE_PE_2_time_cleaned_brm
+```
+
+```{r}
+library(brms)
+df_nonlinear_PA <- df_resp_senti_PE_cleaned %>% filter(sentiment > 0)
+#read in data
+
+df_nonlinear_PA <- df_nonlinear_PA %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+#E2 <- E2 %>% group_by(ID) %>% mutate(PA.z = scale(PA.))
+
+df_nonlinear_PA<-df_nonlinear_PA[abs(df_nonlinear_PA$PE_2)<=30,]
+#df_nonlinear$timeFromDSPStart_min_round <- round(E2$timeFromDSPStart_min/30)
+#df_nonlinear<-df_nonlinear[df_nonlinear$timeFromDSPStart_min_round<16,]
+#E2$PE_1abs<- abs(E2$PE_1)
+#E2$PE_1sign <- factor(ifelse(is.na(E2$PE_1),NA,ifelse(E2$PE_1>0, 1, 0)), levels  = c("0", "1"), labels = c("Negative PE", "Positive PE") ) 
+df_nonlinear_PA <- df_nonlinear_PA %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, sentiment.z*-1, sentiment.z))
+#df_nonlinear <- df_nonlinear %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, NA.z*-1, NA.z) )
+
+fit_loss.IDraneff_PASign_Abs_PE2_EVPE <- brm(
+  bf(sentiment.zFlipped ~ ult * exp(-(time_since_grade_reveal_mins*lambda)),
+     ult ~ 1 +  PE_2_mag * PE_2_val + EVPE_mag * EVPE_val + (1 | ID), lambda ~ 1 + PE_2_mag * PE_2_val + EVPE_mag * EVPE_val + (1 | ID),
+     nl = TRUE),
+  data = df_nonlinear_PA, family = gaussian(),
+  prior = c(
+    prior(normal(1, 0.5), nlpar = "ult"),
+    prior(cauchy(0,1), lb = -.05, ub = 1, nlpar = "lambda")
+  ),
+  control = list(adapt_delta = 0.9), chains = 3, cores = 3, iter = 6000 
+)
+```
+```{r}
+fit_loss.IDraneff_PASign_Abs_PE2_EVPE
+```
+
+```{r}
+A1 <- make_conditions(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, vars = c("PE_2_mag") )
+A1$PE_2_mag <- c(0, 10, 20)
+A1$cond__ <- c("PE_2_mag = 0", "PE_2_mag = 10", "PE_2_mag = 20")
+
+p1 <- conditional_effects(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:PE_2_val", conditions = A1, 
+                          spaghetti =F)
+p1<-plot(p1)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Positive sentiment (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+
+A1b <- make_conditions(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, vars = c("EVPE_mag") )
+A1b$EVPE_mag <- c(0, 10, 20)
+A1b$cond__ <- c("EVPE_mag = 0", "EVPE_mag = 10", "EVPE_mag = 20")
+
+p2<-conditional_effects(fit_loss.IDraneff_PASign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:EVPE_val", conditions = A1b,
+                        spaghetti =F) 
+p2<-plot(p2)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Positive sentiment (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+grid.arrange(p1, p2)
+```
+```{r}
+library(brms)
+df_nonlinear_NA <- df_resp_senti_PE_cleaned %>% filter(sentiment < 0)
+#read in data
+
+df_nonlinear_NA  <- df_nonlinear_NA  %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+#E2 <- E2 %>% group_by(ID) %>% mutate(PA.z = scale(PA.))
+
+df_nonlinear_NA <-df_nonlinear_NA [abs(df_nonlinear_NA$PE_2)<=30,]
+#df_nonlinear$timeFromDSPStart_min_round <- round(E2$timeFromDSPStart_min/30)
+#df_nonlinear<-df_nonlinear[df_nonlinear$timeFromDSPStart_min_round<16,]
+#E2$PE_1abs<- abs(E2$PE_1)
+#E2$PE_1sign <- factor(ifelse(is.na(E2$PE_1),NA,ifelse(E2$PE_1>0, 1, 0)), levels  = c("0", "1"), labels = c("Negative PE", "Positive PE") ) 
+df_nonlinear_NA  <- df_nonlinear_NA  %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, sentiment.z*-1, sentiment.z))
+#df_nonlinear <- df_nonlinear %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, NA.z*-1, NA.z) )
+
+fit_loss.IDraneff_NASign_Abs_PE2_EVPE <- brm(
+  bf(sentiment.zFlipped ~ ult * exp(-(time_since_grade_reveal_mins*lambda)),
+     ult ~ 1 +  PE_2_mag * PE_2_val + EVPE_mag * EVPE_val + (1 | ID), lambda ~ 1 + PE_2_mag * PE_2_val + EVPE_mag * EVPE_val + (1 | ID),
+     nl = TRUE),
+  data = df_nonlinear_NA , family = gaussian(),
+  prior = c(
+    prior(normal(1, 0.5), nlpar = "ult"),
+    prior(cauchy(0,1), lb = -.05, ub = 1, nlpar = "lambda")
+  ),
+  control = list(adapt_delta = 0.9), chains = 3, cores = 3, iter = 6000 
+)
+```
+
+```{r}
+A1 <- make_conditions(fit_loss.IDraneff_NASign_Abs_PE2_EVPE, vars = c("PE_2_mag") )
+A1$PE_2_mag <- c(0, 10, 20)
+A1$cond__ <- c("PE_2_mag = 0", "PE_2_mag = 10", "PE_2_mag = 20")
+
+p1 <- conditional_effects(fit_loss.IDraneff_NASign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:PE_2_val", conditions = A1, 
+                          spaghetti =F)
+p1<-plot(p1)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative sentiment (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+
+A1b <- make_conditions(fit_loss.IDraneff_NASign_Abs_PE2_EVPE, vars = c("EVPE_mag") )
+A1b$EVPE_mag <- c(0, 10, 20)
+A1b$cond__ <- c("EVPE_mag = 0", "EVPE_mag = 10", "EVPE_mag = 20")
+
+p2<-conditional_effects(fit_loss.IDraneff_NASign_Abs_PE2_EVPE, effects = "time_since_grade_reveal_mins:EVPE_val", conditions = A1b,
+                        spaghetti =F) 
+p2<-plot(p2)[[1]] + ggplot2::ylim(-0.5, 2) + ggplot2::ylab("Negative sentiment (scaled)") + ggplot2::xlab("Mins Since Seeing Grade")
+grid.arrange(p1, p2)
+```
+## PE_type*PE_mag*PE_val
+```{r}
+df_resp_senti_PE_cleaned_long <- df_resp_senti_PE_cleaned %>% pivot_longer(
+    cols = c(PE_2_val, PE_2_mag, EVPE_val, EVPE_mag),
+    names_to = c("PE_type", ".value"),
+    names_pattern = "(PE_2|EVPE)_(val|mag)"
+  )
+df_resp_senti_PE_selected_long <- df_resp_senti_PE_cleaned_long %>% select(ID, exam_num, ResponseNumber, time_since_grade_reveal_mins, sentiment, PE_type, val, mag)
+```
+
+```{r}
+#df_resp_senti_PE_selected_long
+df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+#df_resp_senti_PE_selected_long <-df_resp_senti_PE_selected_long[abs(df_linear$PE_2)<=30,]
+resp_senti_PE_type_brm <- brm(
+  formula = sentiment.z ~ 
+    PE_type*val*mag+
+    (1 | ID),
+  data = df_resp_senti_PE_selected_long,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  seed = 1234
+)
+```
+
+```{r}
+resp_senti_PE_type_brm
+```
+```{r}
+cond_df <- data.frame(
+  PE_type = c("EVPE", "PE_2")
+)
+rownames(cond_df) <- c("EVPE", "PE_2")
+ce <- conditional_effects(
+  resp_senti_PE_type_brm,
+  effects = "mag:val",
+  conditions = cond_df
+)
+
+plot(ce, points = TRUE)
+```
+```{r}
+df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+#df_resp_senti_PE_selected_long <-df_resp_senti_PE_selected_long[abs(df_linear$PE_2)<=30,]
+resp_senti_PE_type_time_brm <- brm(
+  formula = sentiment.z ~ 
+    time_since_grade_reveal_mins * PE_type*val*mag+
+    (1 | ID),
+  data = df_resp_senti_PE_selected_long,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  seed = 1234
+)
+```
+
+```{r}
+#df_nonlinear<-df_nonlinear[abs(df_nonlinear$PE_2)<=30,]
+#df_nonlinear$timeFromDSPStart_min_round <- round(E2$timeFromDSPStart_min/30)
+#df_nonlinear<-df_nonlinear[df_nonlinear$timeFromDSPStart_min_round<16,]
+#E2$PE_1abs<- abs(E2$PE_1)
+#E2$PE_1sign <- factor(ifelse(is.na(E2$PE_1),NA,ifelse(E2$PE_1>0, 1, 0)), levels  = c("0", "1"), labels = c("Negative PE", "Positive PE") ) 
+df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+#df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_2 < 0, sentiment.z*-1, sentiment.z))
+
+resp_senti_PE_type_brm_nonlinear <- brm(
+  bf(sentiment.z ~ ult * exp(-(time_since_grade_reveal_mins*lambda)),
+     ult ~ 1 +  PE_type*mag*val + (1 | ID), lambda ~ 1 + PE_type*val*mag + (1 | ID),
+     nl = TRUE),
+  data = df_resp_senti_PE_selected_long, family = gaussian(),
+  prior = c(
+    prior(normal(1, 0.5), nlpar = "ult"),
+    prior(cauchy(0,1), lb = -.05, ub = 1, nlpar = "lambda")
+  ),
+  control = list(adapt_delta = 0.9), chains = 3, cores = 3, iter = 6000 
+)
+```
+```{r}
+resp_senti_PE_type_brm_nonlinear
+```
+```{r}
+A1 <- data.frame(
+  PE_type = "EVPE",
+  mag = c(0, 10, 20)
+)
+A1$cond__ <- c("EVPE: mag = 0", "EVPE: mag = 10", "EVPE: mag = 20")
+
+p1_brm <- conditional_effects(
+  resp_senti_PE_type_brm_nonlinear,
+  effects = "time_since_grade_reveal_mins:val",
+  conditions = A1,
+  spaghetti = FALSE
+)
+
+p1_brm <- plot(p1_brm, plot = FALSE)[[1]] +
+  ggplot2::ylim(-0.5, 2) +
+  ggplot2::ylab("Sentiment (scaled)") +
+  ggplot2::xlab("Minutes Since Seeing Grade") +
+  theme_classic()
+A2 <- data.frame(
+  PE_type = "PE_2",
+  mag = c(0, 10, 20)
+)
+A2$cond__ <- c("PE_2: mag = 0", "PE_2: mag = 10", "PE_2: mag = 20")
+
+p2_brm <- conditional_effects(
+  resp_senti_PE_type_brm_nonlinear,
+  effects = "time_since_grade_reveal_mins:val",
+  conditions = A2,
+  spaghetti = FALSE
+)
+
+p2_brm <- plot(p2_brm, plot = FALSE)[[1]] +
+  ggplot2::ylim(-0.5, 2) +
+  ggplot2::ylab("Sentiment (scaled)") +
+  ggplot2::xlab("Minutes Since Seeing Grade") +
+  theme_classic()
+#gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+```{r}
+p1_brm
+```
+```{r}
+p2_brm
+```
+
+
+```{r}
+A1 <- data.frame(
+  PE_type = "EVPE",
+  mag = c(0, 10, 20)
+)
+A1$cond__ <- c("EVPE: mag = 0", "EVPE: mag = 10", "EVPE: mag = 20")
+
+p1 <- conditional_effects(
+  resp_senti_PE_type_brm_nonlinear,
+  effects = "time_since_grade_reveal_mins:val",
+  conditions = A1,
+  spaghetti = FALSE
+)
+
+p1 <- plot(p1, plot = FALSE)[[1]] +
+  ggplot2::ylim(-0.5, 2) +
+  ggplot2::ylab("Sentiment (scaled)") +
+  ggplot2::xlab("Minutes Since Seeing Grade") +
+  theme_classic()
+A2 <- data.frame(
+  PE_type = "PE_2",
+  mag = c(0, 10, 20)
+)
+A2$cond__ <- c("PE_2: mag = 0", "PE_2: mag = 10", "PE_2: mag = 20")
+
+p2 <- conditional_effects(
+  resp_senti_PE_type_brm_nonlinear,
+  effects = "time_since_grade_reveal_mins:val",
+  conditions = A2,
+  spaghetti = FALSE
+)
+
+p2 <- plot(p2, plot = FALSE)[[1]] +
+  ggplot2::ylim(-0.5, 2) +
+  ggplot2::ylab("Sentiment (scaled)") +
+  ggplot2::xlab("Minutes Since Seeing Grade") +
+  theme_classic()
+#gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+```{r}
+p1
+```
+```{r}
+p2
+```
+#### *Final*
+```{r}
+df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% group_by(ID) %>% dplyr::mutate(sentiment.z = scale(sentiment))
+df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_type =="PE_2"&val=="negative", sentiment.z*-1, sentiment.z))
+
+df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_type =="EVPE"&val=="negative", sentiment.z*-1, sentiment.z))
+
+resp_senti_PE_type_brm_nonlinear_flipped <- brm(
+  bf(sentiment.zFlipped ~ ult * exp(-(time_since_grade_reveal_mins*lambda)),
+     ult ~ 1 +  PE_type*mag*val + (1 | ID), lambda ~ 1 + PE_type*val*mag + (1 | ID),
+     nl = TRUE),
+  data = df_resp_senti_PE_selected_long, family = gaussian(),
+  prior = c(
+    prior(normal(1, 0.5), nlpar = "ult"),
+    prior(cauchy(0,1), lb = -.05, ub = 1, nlpar = "lambda")
+  ),
+  control = list(adapt_delta = 0.9), chains = 3, cores = 3, iter = 6000 
+)
+```
+```{r}
+resp_senti_PE_type_brm_nonlinear_flipped
+```
+```{r}
+# check zero
+library(brms)
+library(dplyr)
+
+draws <- as_draws_df(resp_senti_PE_type_brm_nonlinear_flipped)
+
+# See parameter names
+variables(draws)
+```
+```{r}
+library(tidybayes)
+library(dplyr)
+
+posterior_summary <- draws %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "parameter",
+    values_to = "draw"
+  ) %>%
+  group_by(parameter) %>%
+  summarise(
+    estimate = mean(draw),
+    CI_low = quantile(draw, 0.025),
+    CI_high = quantile(draw, 0.975),
+    P_positive = mean(draw > 0),
+    P_negative = mean(draw < 0),
+    .groups = "drop"
+  )
+
+posterior_summary
+```
+
+
+```{r}
+A1 <- data.frame(
+  PE_type = "EVPE",
+  mag = c(0, 10, 20)
+)
+A1$cond__ <- c("EVPE: mag = 0", "EVPE: mag = 10", "EVPE: mag = 20")
+
+p1_flipped <- conditional_effects(
+  resp_senti_PE_type_brm_nonlinear_flipped,
+  effects = "time_since_grade_reveal_mins:val",
+  conditions = A1,
+  spaghetti = FALSE
+)
+
+p1_flipped <- plot(p1_flipped, plot = FALSE)[[1]] +
+  ggplot2::ylim(-0.5, 2) +
+  ggplot2::ylab("Sentiment (scaled)") +
+  ggplot2::xlab("Minutes Since Seeing Grade") +
+  theme_classic()
+A2 <- data.frame(
+  PE_type = "PE_2",
+  mag = c(0, 10, 20)
+)
+A2$cond__ <- c("PE_2: mag = 0", "PE_2: mag = 10", "PE_2: mag = 20")
+
+p2_flipped <- conditional_effects(
+  resp_senti_PE_type_brm_nonlinear_flipped,
+  effects = "time_since_grade_reveal_mins:val",
+  conditions = A2,
+  spaghetti = FALSE
+)
+
+p2_flipped <- plot(p2_flipped, plot = FALSE)[[1]] +
+  ggplot2::ylim(-0.5, 2) +
+  ggplot2::ylab("Sentiment (scaled)") +
+  ggplot2::xlab("Minutes Since Seeing Grade") +
+  theme_classic()
+#gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+```{r}
+p1_flipped
+```
+```{r}
+p2_flipped
+```
+### new start
+```{r}
+table(df_resp_senti_PE_selected_long$PE_type)
+
+table(
+  df_resp_senti_PE_selected_long$PE_type,
+  df_resp_senti_PE_selected_long$val)
+
+
+df_resp_senti_PE_selected_long %>%
+  count(ID, exam_num, ResponseNumber) %>%
+  count(n)
+```
+
+# ```{r}
+# df_PE_2_EVPE_flipped <- df_resp_senti_PE_selected_long
+# 
+# df_PE_2_EVPE_flipped <- df_PE_2_EVPE_flipped %>%
+#   dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+#   dplyr::mutate(
+#     PE2_val = val[PE_type == "PE_2"][1],  # extract PE_2 val for the group
+#     sentiment.zFlipped = ifelse(PE2_val == "negative",
+#                               -1*sentiment.z,
+#                               sentiment.z)
+#   ) %>%
+#   dplyr::ungroup()
+# # df_PE_2_EVPE_flipped <- df_PE_2_EVPE_flipped %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_type =="PE_2"&val=="negative"|PE_type =="EVPE"&val=="negative", sentiment.z*-1, sentiment.z),)
+# 
+# #df_resp_senti_PE_selected_long <- df_resp_senti_PE_selected_long %>% dplyr::mutate(sentiment.zFlipped = ifelse(PE_type =="EVPE"&val=="negative", sentiment.z*-1, sentiment.z))
+# 
+# resp_senti_PE_type_brm_nonlinear_flipped <- brm(
+#   bf(sentiment.zFlipped ~ ult * exp(-(time_since_grade_reveal_mins*lambda)),
+#      ult ~ 1 +  PE_type*mag*val + (1 | ID), lambda ~ 1 + PE_type*val*mag + (1 | ID),
+#      nl = TRUE),
+#   data = df_PE_2_EVPE_flipped, family = gaussian(),
+#   prior = c(
+#     prior(normal(1, 0.5), nlpar = "ult"),
+#     prior(cauchy(0,1), lb = -.05, ub = 1, nlpar = "lambda")
+#   ),
+#   control = list(adapt_delta = 0.9), chains = 3, cores = 3, iter = 6000 
+# )
+# ```
+# ```{r}
+# resp_senti_PE_type_brm_nonlinear_flipped
+# ```
+# ```{r}
+# plot(resp_senti_PE_type_brm_nonlinear_flipped)
+# pp_check(resp_senti_PE_type_brm_nonlinear_flipped)
+# ```
+# ```{r}
+# resp_senti_PE_type_brm_nonlinear_flipped
+# ```
+# ```{r}
+# plot(resp_senti_PE_type_brm_nonlinear_flipped)
+# ```
+# ```{r}
+# library(posterior)
+# draws_df <- as.data.frame(as_draws(resp_senti_PE_type_brm_nonlinear_flipped)) 
+# 
+# colnames(draws_df)
+# hist(draws_df$X1.b_ult_PE_typePE_2.mag.valpositive)
+# prop_zero <- mean(draws_df$X1.b_ult_PE_typePE_2.mag.valpositive >= 0, na.rm = TRUE)
+# prop_zero
+# ```
+# 
+# ```{r}
+# prop_neg <- mean(draws_df$X1.b_ult_PE_typePE_2.mag.valpositive < -0.04, na.rm = TRUE)
+# prop_neg
+# ```
+
+
+# ```{r}
+# A1 <- data.frame(
+#   PE_type = "EVPE",
+#   mag = c(0, 10, 20)
+# )
+# A1$cond__ <- c("EVPE: mag = 0", "EVPE: mag = 10", "EVPE: mag = 20")
+# 
+# p1 <- conditional_effects(
+#   resp_senti_PE_type_brm_nonlinear_flipped,
+#   effects = "time_since_grade_reveal_mins:val",
+#   conditions = A1,
+#   spaghetti = FALSE
+# )
+# 
+# p1 <- plot(p1, plot = FALSE)[[1]] +
+#   ggplot2::ylim(-0.5, 2) +
+#   ggplot2::ylab("Sentiment (scaled)") +
+#   ggplot2::xlab("Minutes Since Seeing Grade") +
+#   theme_classic()
+# A2 <- data.frame(
+#   PE_type = "PE_2",
+#   mag = c(0, 10, 20)
+# )
+# A2$cond__ <- c("PE_2: mag = 0", "PE_2: mag = 10", "PE_2: mag = 20")
+# 
+# p2 <- conditional_effects(
+#   resp_senti_PE_type_brm_nonlinear_flipped,
+#   effects = "time_since_grade_reveal_mins:val",
+#   conditions = A2,
+#   spaghetti = FALSE
+# )
+# 
+# p2 <- plot(p2, plot = FALSE)[[1]] +
+#   ggplot2::ylim(-0.5, 2) +
+#   ggplot2::ylab("Sentiment (scaled)") +
+#   ggplot2::xlab("Minutes Since Seeing Grade") +
+#   theme_classic()
+# #gridExtra::grid.arrange(p1, p2, ncol = 2)
+# ```
+# ```{r}
+# p1
+# ```
+# ```{r}
+# p2
+# ```
+
+# ```{r}
+# loo_type_nonlinear <- loo(resp_senti_PE_type_brm_nonlinear)
+# loo_type_linear <- loo(resp_senti_PE_type_time_brm)
+# 
+# loo_compare (loo_type_nonlinear,loo_type_linear)
+# ```
+
+

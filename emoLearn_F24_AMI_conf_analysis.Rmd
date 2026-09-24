@@ -1,0 +1,2176 @@
+---
+title: "emoLearn_F24_AMI_analysis"
+author: "Runan Wang"
+date: "2026-02-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(afex)
+library(emmeans)
+library(knitr)
+library(tidyverse)
+library(compute.es)
+library(car)
+library(ggplot2)
+library(multcomp)
+library(pastecs)
+library(WRS2)
+library(Hmisc)
+library(tidyverse)
+library(SuppDists)
+library(ggpubr)
+library(readxl)
+library(ez)
+library(lme4)
+library(dplyr)
+library(corrplot)
+library(psych)
+library(ggpubr) # for Q plot (normality check)
+library(openxlsx)
+library(colorspace)
+library(ggrepel)
+library(directlabels)
+library(ggplot2)
+library(reshape2)
+library(plyr)
+library(scales)
+library(wesanderson)
+library(brms)
+library(stringr)
+library(performance)
+library(see)
+library(tidyr)
+library(lubridate)
+library(tibble)
+library(bayesplot)
+library(janitor)
+library(Rmisc)
+library(RColorBrewer)
+library(sjPlot)
+`select` <- dplyr::select
+`recode` <- dplyr::recode
+`summarise` <- dplyr::summarise
+`describe` <- psych::describe
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Load in function
+## Collapsed function
+```{r}
+library(dplyr)
+library(tibble)
+
+collapse_text_by_label <- function(label_api_text, sentiment, intensity) {
+  r <- rle(label_api_text)
+  block_id <- rep(seq_along(r$lengths), r$lengths)
+
+  tibble(
+    label_api_text = label_api_text,
+    sentiment = sentiment,
+    intensity = intensity,
+    block_id = block_id
+  ) %>%
+    group_by(block_id) %>%
+    summarise(
+      collapsed_text_type = first(label_api_text),
+      length = dplyr::n(),
+      score_sum = sum(sentiment * intensity),
+      score_avg = mean(sentiment * intensity),
+      score_peak = max(abs(sentiment * intensity)),
+      score_start = first(sentiment * intensity),
+      score_end = last(sentiment * intensity),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      block_sentiment = case_when(
+        score_sum > 0 ~ "POSITIVE",
+        score_sum < 0 ~ "NEGATIVE",
+        TRUE ~ "NEUTRAL"
+      )
+    )
+
+}
+
+```
+
+# Load in data
+```{r cars}
+# AMI data
+df_ami_senti_tmp <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/sentiment_analysis/AM/premedEMA_AMI_F24_sentiment.csv")
+df_ami_senti <- df_ami_senti_tmp %>% filter(text != "")
+#1.0, positive
+#-1.0, negative
+#0.0, neutral
+#0.5, mixed
+unique(df_ami_senti$valence)
+```
+
+```{r pressure, echo=FALSE}
+# senti data
+df_senti_full <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/emaData_F24_phrase_sentiment_v5.csv")
+
+df_senti_full <- df_senti_full %>% mutate(api_val = ifelse(api_val == -0.5, 0.5, api_val))
+unique(df_senti_full$api_val)
+
+df_senti_full <- df_senti_full %>% mutate(label_api_text = case_when(label_api == -1 ~ "Expression",
+                                                           label_api == 0 ~ "Neither",
+                                                           label_api == 1 ~ "Regulation"))
+```
+
+## PE
+```{r}
+df_PE <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/premedEMA_f2024_predictors_df.csv")
+colnames(df_PE)[1] = "ID"
+# drop the wrong grade
+df_PE <- df_PE %>% filter(shown_wrong !="1")
+```
+```{r}
+df_PE <- df_PE %>% mutate(PE_1_val = case_when(PE_1 < 0 ~ "negative",
+                                               PE_1 > 0 ~ "positive",
+                                               PE_1 == 0 ~ "zero"), 
+                          PE_1_mag = abs(PE_1),
+                          PE_2_val = case_when(PE_2 < 0 ~ "negative",
+                                               PE_2 > 0 ~ "positive",
+                                               PE_2 == 0 ~ "zero"),
+                          PE_2_mag = abs(PE_2),
+                          EVPE_val = case_when(EVPE < 0 ~ "negative",
+                                               EVPE > 0 ~ "positive",
+                                               EVPE == 0 ~ "zero"),
+                          EVPE_mag = abs(EVPE)
+                    )
+```
+
+```{r}
+df_collapsed_senti_score <- df_senti_full %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  group_modify(~ collapse_text_by_label(
+    label_api_text = .x$label_api,
+    sentiment = .x$api_val,
+    intensity = .x$api_intensity)) %>%
+  ungroup()
+
+df_collapsed_senti_score <- df_collapsed_senti_score %>% relocate(exam_num, .after = ID) %>% arrange(ID, exam_num, ResponseNumber)
+
+df_pre_post_collapsed <- df_collapsed_senti_score %>% dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  dplyr::mutate(prev_senti = lag(score_avg),
+         post_senti = lead(score_avg),
+         prev_peak = lag(score_peak),
+         post_peak = lead(score_peak),
+         prev_end = lag(score_end),
+         post_end = lead(score_end),
+         prev_type = lag(collapsed_text_type),
+         post_type = lead(collapsed_text_type),
+         prev_block_id = lag(block_id),
+         post_block_id = lead(collapsed_text_type),
+         pre_post_avg = post_senti-prev_senti,
+         pre_post_peak = post_peak-prev_peak,
+         pre_post_end = post_end-prev_end
+      ) %>%
+  ungroup()
+
+
+write.csv(df_pre_post_collapsed, "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/scripts/pre_post_collapsed_senti_v5.csv", row.names = FALSE) 
+
+df_pre_post_collapsed_reg <- df_pre_post_collapsed %>% filter(collapsed_text_type == "Regulation")
+```
+
+```{r}
+df_pre_post_collapsed_reg_exam <- df_pre_post_collapsed_reg %>% dplyr::group_by(ID, exam_num) %>% summarise(
+  pre_post_avg = mean(pre_post_avg, na.rm = TRUE),
+  pre_post_peak = max(pre_post_peak, na.rm = TRUE),
+  pre_post_end = last(pre_post_end, na.rm = TRUE))
+
+```
+
+```{r}
+df_collapsed_senti_score <- df_collapsed_senti_score %>% dplyr::group_by(ID, exam_num) %>% dplyr::mutate(
+  exam_avg = mean(score_avg),
+  exam_peak = max(score_peak),
+  exam_end = last(score_end)
+) %>% ungroup()
+```
+
+```{r}
+df_collapsed_senti_score_exam <- df_collapsed_senti_score %>% select(ID, exam_num, exam_avg, exam_peak, exam_end) %>% unique()
+# merge w/ AMI data
+df_senti_ami_exam_tmp <- inner_join(df_ami_senti,df_collapsed_senti_score_exam, by = c("ID", "exam_num"))
+df_senti_ami_exam <- df_senti_ami_exam_tmp %>% dplyr::rename(ami_val = valence, ami_int = intensity, ami_senti = score)
+```
+
+```{r}
+df_pre_post_ami_reg_exam <- inner_join(df_senti_ami_exam, df_pre_post_collapsed_reg_exam, by = c("ID", "exam_num"))
+df_pre_post_ami_reg_exam_PE <- inner_join(df_pre_post_ami_reg_exam, df_PE, by = c("ID","exam_num"))
+```
+
+```{r}
+m1_ami_senti_exam_avg <- lmer(ami_senti ~ exam_avg + (1|ID) + (1|exam_num), data = df_senti_ami_exam)
+summary(m1_ami_senti_exam_avg)
+```
+```{r}
+pp_check(m1_ami_senti_exam_avg)
+```
+```{r}
+ggplot(df_senti_ami_exam, aes(x = exam_avg, y = ami_senti)) +geom_point()+ 
+      geom_smooth(method=lm, colour="black", size = 1.25, se=TRUE )
+```
+
+
+```{r}
+hist(df_senti_ami_exam$ami_senti)
+
+```
+
+```{r}
+m1_ami_senti_exam_peak <- lmer(ami_senti ~ exam_peak + (1|ID) + (1|exam_num), data = df_senti_ami_exam)
+summary(m1_ami_senti_exam_peak)
+```
+```{r}
+pp_check(m1_ami_senti_exam_peak)
+```
+
+
+```{r}
+m1_ami_senti_exam_end <- lmer(ami_senti ~ exam_end + (1|ID) + (1|exam_num), data = df_senti_ami_exam)
+summary(m1_ami_senti_exam_end)
+```
+```{r}
+pp_check(m1_ami_senti_exam_end)
+```
+```{r}
+mix <- mixture(gaussian(), gaussian())
+fit_ami_senti_exam_end_mix <- brm(ami_senti ~ exam_end + (1|ID),
+               data = df_senti_ami_exam,
+               family = mix)
+summary(fit_ami_senti_exam_end_mix)
+pp_check(fit_ami_senti_exam_end_mix)
+```
+```{r}
+summary(fit_mix)
+post <- posterior_samples(fit_mix)
+
+# Plot mixture components using theta1 / theta2 as weights
+ggplot(post, aes(x = Intercept_mu1, y = Intercept_mu2)) +
+  geom_point(alpha = 0.1) +
+  labs(title = "Posterior samples of component means")
+```
+```{r}
+mcmc_areas(post, regex_pars = "mu[12]_exam_end")
+```
+```{r}
+pp_check(fit_mix)
+```
+
+
+
+```{r}
+plot(fit_mix, type = "acf")
+```
+
+```{r}
+mix <- mixture(gaussian(), gaussian())
+fit_ami_senti_exam_avg_mix <- brm(ami_senti ~ exam_avg + (1|ID) +(1|exam_num),
+               data = df_senti_ami_exam,
+               family = mix)
+summary(fit_ami_senti_exam_avg_mix)
+pp_check(fit_ami_senti_exam_avg_mix)
+```
+```{r}
+plot(fit_ami_senti_exam_avg_mix, type = "acf"
+     )
+```
+# Prior: senti vs. exam_avg
+```{r}
+# prior setup
+mix_fam <- mixture(gaussian, gaussian)
+# check the parameter names to set priors
+get_prior(
+  ami_senti ~ exam_avg + (1|ID) + (1|exam_num),
+  family = mix_fam,
+  data   = df_senti_ami_exam
+)
+
+pri_mix <- c(
+  # Means of the two components (on the standardized y scale)
+  prior(normal(-0.7, 0.3), class = "Intercept", dpar = "mu1"),
+  prior(normal( 0.35, 0.3), class = "Intercept", dpar = "mu2"),
+  prior(normal(0, 0.4),     class = "b",        dpar = "mu1"),
+  prior(normal(0, 0.4),     class = "b",        dpar = "mu2"),
+
+  # Residual SDs for each component
+  prior(student_t(3, 0, 0.5), class = "sigma1"),
+  prior(student_t(3, 0, 0.5), class = "sigma2"),
+
+  # Mixture weight prior (Dirichlet over two comps; Beta(2,2) symmetric)
+  prior(dirichlet(2, 2), class = "theta")
+)
+
+fit_ami_senti_exam_avg_mix <- brm(ami_senti ~ exam_avg + (1|ID) +(1|exam_num),
+               data = df_senti_ami_exam,
+               family = mix_fam,
+              prior   = pri_mix,
+  chains  = 4, iter = 2000, warmup = 1000, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+summary(fit_ami_senti_exam_avg_mix)
+pp_check(fit_ami_senti_exam_avg_mix)
+```
+```{r}
+pp_check(fit_ami_senti_exam_avg_mix)
+```
+
+```{r}
+plot(fit_ami_senti_exam_avg_mix, type = "acf"
+     )
+```
+
+
+
+
+```{r}
+df_senti_ami_exam_PE <- inner_join(df_senti_ami_exam,df_PE, by = c("ID","exam_num"))
+```
+### ami_senti vs. PE_1
+```{r}
+m2_ami_senti_PE1 <- lmer(ami_senti ~ PE_1 + 1+ (1|ID) + (1|exam_num), data = df_senti_ami_exam_PE)
+summary(m2_ami_senti_PE1)
+```
+```{r}
+pp_check(m2_ami_senti_PE1)
+```
+```{r}
+m2_ami_senti_PE2 <- lmer(ami_senti ~ PE_2 + 1+ (1|ID) + (1|exam_num), data = df_senti_ami_exam_PE)
+summary(m2_ami_senti_PE2)
+```
+
+```{r}
+m2_ami_senti_EVPE <- lmer(ami_senti ~ EVPE + 1+ (1|ID) + (1|exam_num), data = df_senti_ami_exam_PE)
+summary(m2_ami_senti_EVPE)
+```
+### ami_senti vs. PE_1_val
+```{r}
+m2_ami_senti_PE1_val <- lmer(ami_senti ~ PE_1_val + 1+ (1|ID) + (1|exam_num), data = df_senti_ami_exam_PE)
+summary(m2_ami_senti_PE1_val)
+```
+
+```{r}
+pp_check(m2_ami_senti_PE1_val)
+```
+
+
+# AMI_senti vs. pre_post_reg
+```{r}
+m1_ami_senti_pre_post_reg <- lmer(ami_senti ~ pre_post_avg + 1+ (1|ID) + (1|exam_num), data = df_pre_post_ami_reg_exam_PE)
+summary(m1_ami_senti_pre_post_reg)
+```
+```{r}
+pp_check(m1_ami_senti_pre_post_reg)
+```
+```{r}
+m1_ami_senti_pre_post_reg_exam <- lmer(ami_senti ~ exam_avg + pre_post_avg + exam_avg*pre_post_avg + (1|ID) + (1|exam_num), data = df_pre_post_ami_reg_exam_PE)
+summary(m1_ami_senti_pre_post_reg_exam)
+```
+```{r}
+pp_check(m1_ami_senti_pre_post_reg_exam)
+```
+## brms mix_gaussian()
+```{r}
+brm_ami_senti_pre_post_exam_avg_mix <- brm(ami_senti ~ exam_avg + pre_post_avg + (1|ID) +(1|exam_num),
+               data = df_pre_post_ami_reg_exam_PE,
+               family = mix_fam,
+  chains  = 4, iter = 2000, warmup = 1000, seed = 123,
+  init = 0)
+
+summary(brm_ami_senti_pre_post_exam_avg_mix)
+pp_check(brm_ami_senti_pre_post_exam_avg_mix)
+```
+
+```{r}
+plot(brm_ami_senti_pre_post_exam_avg_mix, type = "acf")
+```
+```{r}
+pri_mix <- c(
+  # Means of the two components (on the standardized y scale)
+  prior(normal(-0.7, 15), class = "Intercept", dpar = "mu1"),
+  prior(normal( 0.2, 7), class = "Intercept", dpar = "mu2"),
+  prior(normal(0, 0.4),     class = "b",        dpar = "mu1"),
+  prior(normal(0, 0.4),     class = "b",        dpar = "mu2"),
+
+  # Residual SDs for each component
+  prior(student_t(3, 0, 0.5), class = "sigma1"),
+  prior(student_t(3, 0, 0.5), class = "sigma2"),
+
+  # Mixture weight prior (Dirichlet over two comps; Beta(2,2) symmetric)
+  prior(dirichlet(0.75, 1.5), class = "theta")
+)
+
+prior_model <- brm(
+  formula = ami_senti ~ exam_avg + pre_post_avg + (1|ID) +(1|exam_num),
+  data = df_pre_post_ami_reg_exam_PE,
+  prior = pri_mix,
+  sample_prior = "only",
+  family = mix_fam
+)
+pp_check(prior_model)
+```
+
+```{r}
+pp_check(prior_model)
+```
+
+# word_count vs. PE
+
+```{r}
+df_pre_post_ami_exam <- inner_join(df_senti_ami_exam, df_pre_post_collapsed, by = c("ID", "exam_num"))
+df_pre_post_ami_exam_PE <- inner_join(df_pre_post_ami_exam, df_PE, by = c("ID","exam_num"))
+```
+
+```{r}
+for (i in (1:nrow(df_pre_post_ami_exam_PE))){
+  phrase = df_pre_post_ami_exam_PE$text[i]
+  df_pre_post_ami_exam_PE$word_count[i] <- str_count(phrase,'[\\w\']+')
+}
+```
+
+```{r}
+m1_mem_length_PE_1 <- lmer(word_count ~ PE_1+(1|ID)+(1|exam_num), data = df_pre_post_ami_exam_PE)
+summary(m1_mem_length_PE_1)
+pp_check(m1_mem_length_PE_1)
+```
+```{r}
+m1_mem_length_PE_1_exam_avg <- lmer(word_count ~ PE_1+exam_avg+(1|ID)+(1|exam_num), data = df_pre_post_ami_exam_PE)
+summary(m1_mem_length_PE_1_exam_avg)
+pp_check(m1_mem_length_PE_1_exam_avg)
+```
+
+```{r}
+m1_mem_length_PE_1_exam_avg_int <- lmer(word_count ~ PE_1+exam_avg+PE_1*exam_avg+(1|ID)+(1|exam_num), data = df_pre_post_ami_exam_PE)
+summary(m1_mem_length_PE_1_exam_avg_int)
+pp_check(m1_mem_length_PE_1_exam_avg_int)
+```
+```{r}
+plot_model(m1_mem_length_PE_1_exam_avg_int, type = "int", terms = c(exam_avg, PE_1), ci.lvl = 0.95)
+```
+```{r}
+m1_mem_length_PE_2_exam_avg_int <- lmer(word_count ~ PE_2+exam_avg+PE_2*exam_avg+(1|ID)+(1|exam_num), data = df_pre_post_ami_exam_PE)
+summary(m1_mem_length_PE_2_exam_avg_int)
+pp_check(m1_mem_length_PE_2_exam_avg_int)
+```
+```{r}
+plot_model(m1_mem_length_PE_2_exam_avg_int, type = "int", terms = c(exam_avg, PE_2), ci.lvl = 0.95)
+```
+
+```{r}
+m1_mem_length_EVPE_exam_avg_int <- lmer(word_count ~ EVPE+exam_avg+EVPE*exam_avg+(1|ID)+(1|exam_num), data = df_pre_post_ami_exam_PE)
+summary(m1_mem_length_EVPE_exam_avg_int)
+pp_check(m1_mem_length_EVPE_exam_avg_int)
+```
+
+```{r}
+plot_model(m1_mem_length_EVPE_exam_avg_int, type = "int", terms = c(exam_avg, EVPE), ci.lvl = 0.95)
+```
+
+```{r}
+exam_avg_PE_1 <- lmer(ami_senti ~ exam_avg +(1|ID), data = df_pre_post_ami_exam_PE)
+summary(exam_avg_PE_1)
+pp_check(exam_avg_PE_1)
+```
+```{r}
+plot_model(exam_avg_PE_1)
+```
+
+```{r}
+m1_ami_sent_PE_1 <- lmer(ami_senti ~ PE_1+(1|ID)+(1|exam_num), data = df_pre_post_ami_exam_PE)
+summary(m1_ami_sent_PE_1)
+pp_check(m1_ami_sent_PE_1)
+```
+# word_count vs. ami_senti
+```{r}
+m1_ami_senti_word_count <- lmer(word_count ~ ami_senti + (1|ID) + (1|exam_num), data = df_pre_post_ami_exam_PE )
+
+summary(m1_ami_senti_word_count)
+
+pp_check(m1_ami_senti_word_count)
+```
+
+# ami_senti vs. reg_prop
+```{r}
+df_no_na <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/processed/premedEMA_API_F24_conf_processed.csv")
+
+df_no_na <- df_no_na %>% mutate(label_api_text = case_when(label_api == -1 ~ "Expression",
+                                                           label_api == 0 ~ "Neither",
+                                                           label_api == 1 ~ "Regulation"))
+df_select <- df_no_na %>% select(ID, exam_num, ResponseNumber, exam_resp, text_phrase, label_api_text, label_api, word_count)
+df_by_sub_exam <- df_select %>% dplyr::count(ID, exam_num, label_api_text) %>% pivot_wider(names_from = label_api_text, values_from = n, values_fill = 0)
+
+df_by_sub_exam <- df_by_sub_exam %>% dplyr::group_by(ID, exam_num) %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+
+# The total word count of each label, per exam
+df_by_sub_exam_word_count <- df_select %>% group_by(ID, exam_num, label_api_text) %>% summarise(sum_word_count = sum(word_count), .groups = "drop")
+
+# The wide format
+df_by_sub_exam_word_count_wide <- df_by_sub_exam_word_count %>% group_by(ID, exam_num) %>% pivot_wider(names_from = label_api_text, values_from = sum_word_count)
+
+df_by_sub_exam_word_count_wide <- df_by_sub_exam_word_count_wide %>% dplyr::mutate(across(where(is.numeric), ~replace(.,is.na(.), 0)))
+
+df_by_sub_exam_word_count_wide <- df_by_sub_exam_word_count_wide %>% dplyr::group_by(ID, exam_num) %>%
+  dplyr::mutate(exam_total_word = sum(Expression + Regulation + Neither),
+         exp_word_ratio = Expression/exam_total_word,
+         reg_word_ratio = Regulation/exam_total_word,
+         nei_word_ratio = Neither/exam_total_word)
+```
+
+```{r}
+df_ami_pre_post_ratio_PE_tmp <- inner_join(df_pre_post_ami_exam_PE, df_by_sub_exam, by = c("ID", "exam_num"))
+df_ami_senti_ratio_PE <- inner_join(df_senti_ami_exam_PE, df_by_sub_exam, by = c("ID", "exam_num"))
+
+df_ami_senti_word_PE_tmp <- inner_join(df_senti_ami_exam_PE, df_by_sub_exam_word_count_wide, by = c("ID", "exam_num"))
+
+# remove text = NaN
+df_ami_senti_word_PE <- df_ami_senti_word_PE_tmp %>% filter(df_ami_senti_word_PE_tmp$text != "")
+```
+
+```{r}
+ggplot(data = df_ami_ratio_PE, aes(x = reg_ratio, y = ami_senti)) + geom_point()
+```
+
+```{r}
+ggplot(data = df_ami_ratio_PE, aes(x = PE_1, y = ami_senti)) + geom_point()
+```
+```{r}
+ggplot(data = df_ami_senti_ratio_PE, aes(x = PE_2, y = ami_senti)) + geom_point()
+```
+
+```{r}
+ggplot(data = df_ami_senti_ratio_PE, aes(x = EVPE, y = ami_senti)) + geom_point()
+```
+```{r}
+m1_ami_senti_reg_ratio <- lmer(ami_senti ~ reg_ratio + (1|ID) + (1|exam_num), data = df_ami_senti_ratio_PE)
+summary(m1_ami_senti_reg_ratio)
+
+pp_check(m1_ami_senti_reg_ratio)
+```
+
+```{r}
+m1_ami_senti_reg_ratio_PE_1 <- lmer(ami_senti ~ reg_ratio + PE_1 + reg_ratio*PE_1 + (1|ID) + (1|exam_num), data = df_ami_ratio_PE)
+summary(m1_ami_senti_reg_ratio_PE_1)
+
+pp_check(m1_ami_senti_reg_ratio_PE_1)
+```
+
+```{r}
+hist(df_ami_senti_ratio_PE$ami_senti)
+```
+# Ami_senti_group
+## Data preprop
+```{r}
+df_ami_senti_ratio_PE
+df_ami_senti_ratio_PE <- df_ami_senti_ratio_PE %>% mutate(ami_senti_group = cut(ami_senti, breaks = c(-1,-0.25,0.5,1.0), labels = c("neg","neu","pos")))
+
+ggplot(df_ami_senti_ratio_PE, aes(x = ami_senti_group)) +
+    geom_bar() +
+    labs(title = "Frequency Plot of ami_senti group",
+         x = "Ami_senti group",
+         y = "Frequency")
+
+
+```
+
+### brm: multi_ordinal
+```{r}
+ordered_factor <- c("neg", "neu","pos")
+
+df_ami_senti_ratio_PE$ami_senti_group <- ordered(df_ami_senti_ratio_PE$ami_senti_group, levels = c("neg","neu","pos"))
+```
+
+```{r}
+m1_ordinal_ami_senti_PE_1 <- brm(ami_senti_group ~ PE_1 + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m1_ordinal_ami_senti_PE_1)
+pp_check(m1_ordinal_ami_senti_PE_1)
+```
+```{r}
+plot(conditional_effects(m1_ordinal_ami_senti_PE_1))
+```
+
+```{r}
+m1_ordinal_ami_senti_PE_2 <- brm(ami_senti_group ~ PE_2 + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m1_ordinal_ami_senti_PE_2)
+pp_check(m1_ordinal_ami_senti_PE_2)
+```
+
+```{r}
+plot(conditional_effects(m1_ordinal_ami_senti_PE_2))
+```
+
+
+```{r}
+m1_ordinal_ami_senti_EVPE <- brm(ami_senti_group ~ EVPE + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m1_ordinal_ami_senti_EVPE)
+pp_check(m1_ordinal_ami_senti_EVPE)
+```
+```{r}
+plot(conditional_effects(m1_ordinal_ami_senti_EVPE))
+```
+####Plotting
+```{r}
+# Generate conditional effects for each model
+eff_EVPE <- conditional_effects(m1_ordinal_ami_senti_EVPE, effects = "EVPE")$EVPE %>%
+  as_tibble() %>% mutate(Predictor = "EVPE")
+
+eff_PE1 <- conditional_effects(m1_ordinal_ami_senti_PE_1, effects = "PE_1")$PE_1 %>%
+  as_tibble() %>% mutate(Predictor = "PE_1")
+
+eff_PE2 <- conditional_effects(m1_ordinal_ami_senti_PE_2, effects = "PE_2")$PE_2 %>%
+  as_tibble() %>% mutate(Predictor = "PE_2")
+
+# Combine all into one dataframe
+eff_all <- bind_rows(eff_EVPE, eff_PE1, eff_PE2)
+```
+```{r}
+PE1_AMI_senti <- ggplot(eff_PE1, aes(x = effect1__, y = estimate__)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__), alpha = 0.15, color = NA) +
+  labs(
+    title = "PE1 effect on autobiographical memory sentiment",
+    x = "Prediction error 1",
+    y = "Predicted ordered logit (AMI sentiment)",
+    color = "Predictor", fill = "Predictor"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "top"
+  )
+PE1_AMI_senti
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PE1_AMI_senti.png",plot = PE1_AMI_senti, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PE1_AMI_senti.pdf",plot = PE1_AMI_senti, width = 6, heigh = 4, dpi = 300)
+```
+```{r}
+PE2_AMI_senti <- ggplot(eff_PE2, aes(x = effect1__, y = estimate__)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__), alpha = 0.15, color = NA) +
+  labs(
+    title = "PE2 effect on autobiographical memory sentiment",
+    x = "Prediction error 2",
+    y = "Predicted ordered logit (AMI sentiment)",
+    color = "Predictor", fill = "Predictor"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "top"
+  )
+PE2_AMI_senti
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PE2_AMI_senti.png",plot = PE2_AMI_senti, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PE2_AMI_senti.pdf",plot = PE2_AMI_senti, width = 6, heigh = 4, dpi = 300)
+```
+```{r}
+EVPE_AMI_senti <- ggplot(eff_EVPE, aes(x = effect1__, y = estimate__)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__), alpha = 0.15, color = NA) +
+  labs(
+    title = "EVPE effect on autobiographical memory sentiment",
+    x = "EVPE",
+    y = "Predicted ordered logit (AMI sentiment)",
+    color = "Predictor", fill = "Predictor"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "top"
+  )
+EVPE_AMI_senti
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/EVPE_AMI_senti.png",plot = EVPE_AMI_senti, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/EVPE_AMI_senti.pdf",plot = EVPE_AMI_senti, width = 6, heigh = 4, dpi = 300)
+```
+```{r}
+three_PEs_AMI_senti <- ggplot(eff_all, aes(x = effect1__, y = estimate__, color = Predictor, fill = Predictor)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__), alpha = 0.15, color = NA) +
+  labs(
+    title = "PE predictors' effect on autobiographical memory sentiment",
+    x = "Prediction Error (PE value)",
+    y = "Predicted ordered logit (AMI sentiment)",
+    color = "Predictor", fill = "Predictor"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+three_PEs_AMI_senti
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/three_PEs_AMI_senti.png",plot = three_PEs_AMI_senti, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/three_PEs_AMI_senti.pdf",plot = three_PEs_AMI_senti, width = 6, heigh = 4, dpi = 300)
+```
+
+### ami_senti vs. reg_prop
+```{r}
+m2_ordinal_ami_senti_reg <- brm(ami_senti_group ~ reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg)
+pp_check(m2_ordinal_ami_senti_reg)
+```
+```{r}
+m2_ordinal_ami_senti_reg_EVPE <- brm(ami_senti_group ~ reg_ratio + EVPE + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg_EVPE)
+pp_check(m2_ordinal_ami_senti_reg_EVPE)
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_EVPE_val_int <- brm(ami_senti_group ~ EVPE_val*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg_EVPE_val_int)
+pp_check(m2_ordinal_ami_senti_reg_EVPE_val_int)
+```
+
+```{r}
+m3_ordinal_ami_senti_reg_EVPE_val_add <- brm(ami_senti_group ~ EVPE_val+reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m3_ordinal_ami_senti_reg_EVPE_val_add)
+pp_check(m3_ordinal_ami_senti_reg_EVPE_val_add)
+```
+### final: ami_senti vs. reg_prop*PE
+```{r}
+m2_ordinal_ami_senti_reg_EVPE_val_int <- brm(ami_senti_group ~ EVPE_val*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg_EVPE_val_int)
+pp_check(m2_ordinal_ami_senti_reg_EVPE_val_int)
+```
+```{r}
+ami_senti_reg_EVPE_val_int_plotting <- conditional_effects(m2_ordinal_ami_senti_reg_EVPE_val_int)
+
+ami_senti_reg_EVPE_val_int_plot_list <- plot(ami_senti_reg_EVPE_val_int_plotting, plot = FALSE)
+ami_senti_reg_EVPE_val_int_plot_main <- ami_senti_reg_EVPE_val_int_plot_list[[3]]
+
+```
+### Model comparison
+```{r}
+molde0_senti_reg_word_ratio_EVPE_val <-  add_criterion(m2_ordinal_ami_senti_reg_word_ratio, "loo")
+model1_senti_reg_word_ratio_EVPE_val_add <- add_criterion(m3_ordinal_ami_senti_reg_EVPE_val_add, "loo")
+model2_senti_reg_word_ratio_EVPE_val_int <- add_criterion(m2_ordinal_ami_senti_reg_EVPE_val_int, "loo")
+
+model_comparison_senti_reg_EVPE_val <- loo_compare(molde0_senti_reg_word_ratio_EVPE_val,model1_senti_reg_word_ratio_EVPE_val_add,model2_senti_reg_word_ratio_EVPE_val_int, criterion = "loo")
+print(model_comparison_senti_reg_EVPE_val , simplify = FALSE)
+```
+#### Final
+```{r}
+ami_senti_reg_EVPE_val_int_plot_main_fn <- ami_senti_reg_EVPE_val_int_plot_main +
+  labs(
+    title = "ER and Autobiographical Memory by PE Valence",
+    x = "The ratio of regulation-related language",
+    y = "Autobiographic memory sentiment",
+    color = "PE valence",
+    fill = "PE valence") +
+  theme_classic() +
+  theme(
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0
+    ), plot.title = element_text(size = 19),
+    axis.title = element_text(size = 17),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),    # Legend Title
+    legend.text = element_text(size = 12))
+ami_senti_reg_EVPE_val_int_plot_main_fn
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/final plots/interaction_EVPE_val_reg_ratio_AMI_senti.png",plot =ami_senti_reg_EVPE_val_int_plot_main_fn, width = 10, heigh = 7, dpi = 300)
+
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/final plots/interaction_EVPE_val_reg_ratio_AMI_senti.pdf",plot = ami_senti_reg_EVPE_val_int_plot_main_fn, width = 10, heigh = 7, dpi = 300)
+
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/final plots/interaction_EVPE_val_reg_ratio_AMI_senti.eps",plot = ami_senti_reg_EVPE_val_int_plot_main_fn, width = 10, heigh = 7, dpi = 300)
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_EVPE_int <- brm(ami_senti_group ~ EVPE + reg_ratio + EVPE*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg_EVPE_int)
+pp_check(m2_ordinal_ami_senti_reg_EVPE)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_EVPE_int))
+```
+```{r}
+marginal_effects(m2_ordinal_ami_senti_reg_EVPE)
+```
+
+### model comparison
+```{r}
+loo_reg <- loo(m2_ordinal_ami_senti_reg)
+loo_EVPE <- loo(m2_ordinal_ami_senti_reg_EVPE)
+loo_reg_EVPE_int <- loo(m2_ordinal_ami_senti_reg_EVPE_int)
+```
+```{r}
+loo_reg
+loo_EVPE
+loo_reg_EVPE_int
+```
+
+
+```{r}
+loo_compare(loo_reg, loo_EVPE, loo_reg_EVPE_int)
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_PE_2 <- brm(ami_senti_group ~ PE_2 + reg_ratio + PE_2*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg_PE_2)
+pp_check(m2_ordinal_ami_senti_reg_PE_2)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_PE_2))
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_PE_1 <- brm(ami_senti_group ~ PE_1 + reg_ratio + PE_1*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg_PE_1)
+pp_check(m2_ordinal_ami_senti_reg_PE_1)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_PE_1))
+```
+
+
+### ami_senti vs reg_prop*PE*ema_senti
+```{r}
+m2_ordinal_ami_senti_reg_EVPE_avg <- brm(ami_senti_group ~ EVPE + reg_ratio + exam_avg + EVPE*reg_ratio*exam_avg + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m2_ordinal_ami_senti_reg_EVPE_avg)
+pp_check(m2_ordinal_ami_senti_reg_EVPE_avg)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_EVPE_avg))
+```
+
+### ami_senti vs. reg_prop*ema_senti
+```{r}
+m3_ordinal_ami_senti_reg_avg <- brm(ami_senti_group ~ reg_ratio * exam_avg + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+summary(m3_ordinal_ami_senti_reg_avg)
+pp_check(m3_ordinal_ami_senti_reg_avg)
+```
+```{r}
+plot(conditional_effects(m3_ordinal_ami_senti_reg_avg))
+```
+###ami_senti vs. pre_post_reg
+```{r}
+df_pre_post_ami_reg_exam_PE <- df_pre_post_ami_reg_exam_PE %>% mutate(ami_senti_group = cut(ami_senti, breaks = c(-1,-0.25,0.5,1.0), labels = c("neg","neu","pos")))
+df_pre_post_ami_reg_exam_PE$ami_senti_group <- ordered(df_pre_post_ami_reg_exam_PE$ami_senti_group, levels = c("neg","neu","pos"))
+
+
+df_pre_post_ami_reg_exam_PE <- df_pre_post_ami_reg_exam_PE %>% mutate(pre_post_val = case_when(pre_post_avg > 0 ~ "up",
+                                                                        pre_post_avg == 0 ~ "no_change",
+                                                                        pre_post_avg < 0 ~ "down"))
+
+
+df_pre_post_ami_reg_exam_PE$pre_post_val <- ordered(df_pre_post_ami_reg_exam_PE$pre_post_val, levels = c("down", "no_change","up"))
+```
+
+```{r}
+m3_ordinal_ami_senti_pre_post_reg <- brm(ami_senti_group ~ pre_post_avg * exam_avg + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_pre_post_ami_reg_exam_PE)
+
+summary(m3_ordinal_ami_senti_pre_post_reg)
+pp_check(m3_ordinal_ami_senti_pre_post_reg)
+```
+```{r}
+plot(conditional_effects(m3_ordinal_ami_senti_pre_post_reg))
+```
+```{r}
+df_ami_ratio_PE <- df_ami_ratio_PE %>% mutate(pre_post_val = case_when(pre_post_avg > 0 ~ "up",
+                                                                        pre_post_avg == 0 ~ "no_change",
+                                                                        pre_post_avg < 0 ~ "down"))
+
+
+df_ami_ratio_PE$pre_post_val <- ordered(df_ami_ratio_PE$pre_post_val, levels = c("down", "no_change","up"))
+
+```
+```{r}
+m3_ordinal_ami_senti_pre_post_reg_val <- brm(ami_senti_group ~ pre_post_val * score_avg + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_ratio_PE)
+
+summary(m3_ordinal_ami_senti_pre_post_reg_val)
+pp_check(m3_ordinal_ami_senti_pre_post_reg_val)
+```
+```{r}
+plot(conditional_effects(m3_ordinal_ami_senti_pre_post_reg_val))
+```
+
+### ami_senti vs. reg_occur*PE
+```{r}
+# if regulation occurr
+df_ami_senti_ratio_PE <- df_ami_senti_ratio_PE %>% mutate(reg_check = ifelse(Regulation >0, 1, 0))
+df_ami_senti_ratio_PE$reg_check <- as.factor(df_ami_senti_ratio_PE$reg_check)
+df_ami_senti_ratio_PE$reg_check <- ordered(df_ami_senti_ratio_PE$reg_check, levels = c(0,1))
+```
+```{r}
+m4_ordinal_ami_senti_reg_occur_PE_1 <- brm(ami_senti_group ~ reg_check * PE_1 + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+summary(m4_ordinal_ami_senti_reg_occur_PE_1)
+pp_check(m4_ordinal_ami_senti_reg_occur_PE_1)
+```
+```{r}
+plot(conditional_effects(m4_ordinal_ami_senti_reg_occur_PE_1))
+```
+
+```{r}
+m4_ordinal_ami_senti_reg_occur_PE_2 <- brm(ami_senti_group ~ reg_check * PE_2 + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+summary(m4_ordinal_ami_senti_reg_occur_PE_2)
+pp_check(m4_ordinal_ami_senti_reg_occur_PE_2)
+```
+
+```{r}
+plot(conditional_effects(m4_ordinal_ami_senti_reg_occur_PE_2))
+```
+
+```{r}
+m4_ordinal_ami_senti_reg_occur_EVPE <- brm(ami_senti_group ~ reg_check * EVPE + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+summary(m4_ordinal_ami_senti_reg_occur_EVPE)
+pp_check(m4_ordinal_ami_senti_reg_occur_EVPE)
+```
+```{r}
+plot(conditional_effects(m4_ordinal_ami_senti_reg_occur_EVPE))
+```
+
+### ami_senti vs. reg_word_count*PE +total_word
+```{r}
+m1_ordinal_ami_senti_reg_word_EVPE <- brm(ami_senti_group ~ Regulation * EVPE + exam_total_word + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m1_ordinal_ami_senti_reg_word_EVPE)
+pp_check(m1_ordinal_ami_senti_reg_word_EVPE)
+```
+```{r}
+plot(conditional_effects(m1_ordinal_ami_senti_reg_word_EVPE))
+```
+```{r}
+m1_ordinal_ami_senti_reg_word_EVPE_val <- brm(ami_senti_group ~ Regulation * EVPE_val + exam_total_word + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m1_ordinal_ami_senti_reg_word_EVPE_val)
+pp_check(m1_ordinal_ami_senti_reg_word_EVPE_val)
+```
+```{r}
+plot(conditional_effects(m1_ordinal_ami_senti_reg_word_EVPE_val))
+```
+
+```{r}
+m1_ordinal_ami_senti_reg_word_PE_1 <- brm(ami_senti_group ~ Regulation * PE_1 + exam_total_word + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m1_ordinal_ami_senti_reg_word_PE_1)
+pp_check(m1_ordinal_ami_senti_reg_word_PE_1)
+```
+```{r}
+plot(conditional_effects(m1_ordinal_ami_senti_reg_word_PE_1))
+```
+
+```{r}
+m1_ordinal_ami_senti_reg_word_PE_2 <- brm(ami_senti_group ~ Regulation * PE_2 + exam_total_word + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m1_ordinal_ami_senti_reg_word_PE_2)
+pp_check(m1_ordinal_ami_senti_reg_word_PE_2)
+```
+```{r}
+plot(conditional_effects(m1_ordinal_ami_senti_reg_word_PE_2))
+```
+###ami_senti vs. reg_word_ratio*PE
+```{r}
+df_ami_senti_word_PE <- df_ami_senti_word_PE %>% mutate(ami_senti_group = cut(ami_senti, breaks = c(-1,-0.25,0.5,1.0), labels = c("neg","neu","pos")))
+
+ordered_factor <- c("neg", "neu","pos")
+
+df_ami_senti_word_PE$ami_senti_group <- ordered(df_ami_senti_word_PE$ami_senti_group, levels = c("neg","neu","pos"))
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_word_ratio_EVPE <- brm(ami_senti_group ~ reg_word_ratio * EVPE + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m2_ordinal_ami_senti_reg_word_ratio_EVPE)
+pp_check(m2_ordinal_ami_senti_reg_word_ratio_EVPE)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_word_ratio_EVPE))
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_word_ratio_EVPE_val <- brm(ami_senti_group ~ reg_word_ratio * EVPE_val + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m2_ordinal_ami_senti_reg_word_ratio_EVPE_val)
+pp_check(m2_ordinal_ami_senti_reg_word_ratio_EVPE_val)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_word_ratio_EVPE_val))
+```
+####Plotting
+```{r}
+ami_senti_EVPE_val_int_plotting <- conditional_effects(m2_ordinal_ami_senti_reg_word_ratio_EVPE_val)
+
+ami_senti_EVPE_val_int_plot_list <- plot(ami_senti_EVPE_val_int_plotting, plot = FALSE)
+ami_senti_EVPE_val_int_plot_main <- ami_senti_EVPE_val_int_plot_list[[3]]
+```
+
+#### Model_comparison
+
+```{r}
+m2_ordinal_ami_senti_reg_word_ratio <- brm(ami_senti_group ~ reg_word_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m2_ordinal_ami_senti_reg_word_ratio)
+pp_check(m2_ordinal_ami_senti_reg_word_ratio)
+```
+```{r}
+m2_ordinal_ami_senti_reg_word_ratio_EVPE_add <- brm(ami_senti_group ~ reg_word_ratio + EVPE_val + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m2_ordinal_ami_senti_reg_word_ratio_EVPE_add)
+pp_check(m2_ordinal_ami_senti_reg_word_ratio_EVPE_add)
+```
+
+```{r}
+molde0_senti_reg_word_ratio_EVPE <-  add_criterion(m2_ordinal_ami_senti_reg_word_ratio, "loo")
+model1_senti_reg_word_ratio_EVPE_add <- add_criterion(m2_ordinal_ami_senti_reg_word_ratio_EVPE_add, "loo")
+model2_senti_reg_word_ratio_EVPE_int <- add_criterion(m2_ordinal_ami_senti_reg_word_ratio_EVPE_val, "loo")
+
+model_comparison_senti_reg_EVPE <- loo_compare(molde0_senti_reg_word_ratio_EVPE,model1_senti_reg_word_ratio_EVPE_add,model2_senti_reg_word_ratio_EVPE_int, criterion = "loo")
+print(model_comparison_senti_reg_EVPE , simplify = FALSE)
+```
+
+```{r}
+ami_senti_EVPE_val_int_plot_main_fn <- ami_senti_EVPE_val_int_plot_main +
+  labs(title = "Interaction effect of EVPE valence and regulation ratio on autobiographical memory sentiment",
+    x = "The ratio of regulation-related language",
+    y = "Autobiographic memory sentiment",
+    color = "EVPE valence",
+    fill = "EVPE valence",
+    caption = strwrap("This plot shows the interaction effect of EVPE valence and the regulation-lated word ratio on later autobiographical memory sentiment category. For participants who received a higher-than-average grade, higher proportion of regulation in their EMA audio recording is associated with higher probablity to have a more negative AMI memory sentiment, while for participants who received a lower-than-average grade, higher regulation ratio is associated with slightly higher memory sentiment.", width = 130) %>%paste(collapse = "\n"
+  )) +
+  theme_classic() +
+  theme(
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0
+    )
+  )
+ami_senti_EVPE_val_int_plot_main_fn
+#ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/interaction_EVPE_val_reg_ratio_AMI_senti.png",plot = ami_senti_EVPE_val_int_plot_main_fn, width = 10, heigh = 7, dpi = 300)
+
+#ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/interaction_EVPE_val_reg_ratio_AMI_senti.pdf",plot = ami_senti_EVPE_val_int_plot_main_fn, width = 10, heigh = 7, dpi = 300)
+```
+### ami_senti vs. EVPE*reg*GAD
+
+```{r}
+df_ami_senti_word_PE_mood <- inner_join(df_ami_senti_word_PE, df_qual, by ="ID")
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_word_ratio_EVPE_val_gad <- brm(ami_senti_group ~ reg_word_ratio * EVPE_val * GAD_score + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE_mood)
+summary(m2_ordinal_ami_senti_reg_word_ratio_EVPE_val_gad)
+pp_check(m2_ordinal_ami_senti_reg_word_ratio_EVPE_val_gad)
+```
+
+#### Final model: ami_senti ~ reg_word_ratio*EVPE_val*GAD
+```{r}
+rdm_ordinal_ami_senti_reg_word_ratio <- brm(ami_senti_group ~ reg_word_ratio * EVPE_val + (1 + reg_word_ratio * EVPE_val|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(rdm_ordinal_ami_senti_reg_word_ratio)
+pp_check(rdm_ordinal_ami_senti_reg_word_ratio)
+```
+
+
+
+```{r}
+m2_ordinal_ami_senti_reg_word_ratio_PE_1 <- brm(ami_senti_group ~ reg_word_ratio * PE_1 + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m2_ordinal_ami_senti_reg_word_ratio_PE_1)
+pp_check(m2_ordinal_ami_senti_reg_word_ratio_PE_1)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_word_ratio_PE_1))
+```
+
+```{r}
+m2_ordinal_ami_senti_reg_word_ratio_PE_2 <- brm(ami_senti_group ~ reg_word_ratio * PE_2 + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m2_ordinal_ami_senti_reg_word_ratio_PE_2)
+pp_check(m2_ordinal_ami_senti_reg_word_ratio_PE_2)
+```
+```{r}
+plot(conditional_effects(m2_ordinal_ami_senti_reg_word_ratio_PE_2))
+```
+
+```{r}
+m1_exam_word_exam_avg <- lmer(exam_total_word ~ exam_avg  + (1|ID) + (1|exam_num),data = df_ami_senti_word_PE)
+summary(m1_exam_word_exam_avg)
+```
+```{r}
+pp_check(m1_exam_word_exam_avg)
+```
+
+```{r}
+m1_reg_word_ratio_exam_avg <- lmer(reg_word_ratio ~ exam_avg + (1|ID) + (1|exam_num),data = df_ami_senti_word_PE)
+summary(m1_reg_word_ratio_exam_avg)
+pp_check(m1_reg_word_ratio_exam_avg)
+```
+```{r}
+m1_reg_word_exam_avg_only <- lmer(Regulation ~ exam_avg  + (1|ID) + (1|exam_num),data = df_ami_senti_word_PE)
+summary(m1_reg_word_exam_avg_only)
+pp_check(m1_reg_word_exam_avg_only)
+```
+
+```{r}
+m1_reg_word_exam_avg <- lmer(Regulation ~ exam_avg + exam_total_word + (1|ID) + (1|exam_num),data = df_ami_senti_word_PE)
+summary(m1_reg_word_exam_avg)
+pp_check(m1_reg_word_exam_avg)
+```
+
+
+##ami_senti vs regulation and exam_avg
+
+```{r}
+m1_ordinal_ami_senti_reg_word <- brm(ami_senti_group ~ Regulation + exam_total_word + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m1_ordinal_ami_senti_reg_word)
+pp_check(m1_ordinal_ami_senti_reg_word)
+```
+```{r}
+plot_model(m1_ordinal_ami_senti_reg_word)
+```
+
+```{r}
+m1_ordinal_ami_senti_reg_word_ratio <- brm(ami_senti_group ~ reg_word_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(m1_ordinal_ami_senti_reg_word_ratio)
+pp_check(m1_ordinal_ami_senti_reg_word_ratio)
+```
+```{r}
+plot_model(m1_ordinal_ami_senti_reg_word_ratio)
+```
+
+# Individual difference
+```{r}
+df_qual <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/processed/premedEMA_exit_mood_final.csv")
+df_neu <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/negative_emotionality_scores.csv")
+```
+
+```{r}
+# model name: m2_ordinal_ami_senti_reg_word_ratio_EVPE_val
+```
+
+```{r}
+df_ami_senti_word_PE_qual <- inner_join(df_ami_senti_word_PE, df_qual, by = "ID")
+df_ami_senti_word_PE_neu <- inner_join(df_ami_senti_word_PE, df_neu, by = "ID")
+```
+## reg_word_ratio ~ GAD
+```{r}
+m1_reg_word_ratio_gad <- lmer(reg_word_ratio ~ GAD_score*exam_avg+ + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(m1_reg_word_ratio_gad)
+pp_check(m1_reg_word_ratio_gad)
+```
+```{r}
+hist(df_ami_senti_word_PE_qual$GAD_score)
+```
+```{r}
+gad_evpe <- lmer(GAD_score ~ EVPE_val*EVPE_mag+ (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(gad_evpe)
+```
+
+```{r}
+m1_reg_word_ratio_gad_EVPE_val <- lmer(reg_word_ratio ~ GAD_score*EVPE_val + 1 + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(m1_reg_word_ratio_gad_EVPE_val)
+pp_check(m1_reg_word_ratio_gad_EVPE_val)
+```
+```{r}
+m1_reg_word_ratio_gad_EVPE_val_mag <- lmer(reg_word_ratio ~ GAD_score*EVPE_val*EVPE_mag + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(m1_reg_word_ratio_gad_EVPE_val_mag)
+pp_check(m1_reg_word_ratio_gad_EVPE_val_mag)
+```
+
+```{r}
+m1_reg_word_ratio_gad_EVPE_mag <- lmer(reg_word_ratio ~ GAD_score*EVPE_mag + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(m1_reg_word_ratio_gad_EVPE_mag)
+pp_check(m1_reg_word_ratio_gad_EVPE_mag)
+```
+## reg_word_ratio ~ PE*GAD
+```{r}
+test_EVPE <- lmer(reg_word_ratio ~ GAD_score*EVPE + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(test_EVPE)
+pp_check(test_EVPE)
+```
+```{r}
+test_PE_2 <- lmer(reg_word_ratio ~ GAD_score*PE_2 + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(test_PE_2)
+pp_check(test_PE_2)
+```
+```{r}
+test_PE_1 <- lmer(reg_word_ratio ~ GAD_score*PE_1 + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(test_PE_1)
+pp_check(test_PE_1)
+```
+
+### PE shift vs. GAD
+```{r}
+df_ami_senti_word_PE_qual_no_na <- df_ami_senti_word_PE_qual %>% filter(!is.na(PE_1)&!is.na(PE_2)) %>% mutate(PE_shift = PE_2-PE_1)
+```
+
+
+```{r}
+m3_PE_shift_gad <- lmer(PE_shift ~ EVPE*GAD_score + (1|exam_num) +(1|ID), data =df_ami_senti_word_PE_qual_no_na)
+summary(m3_PE_shift_gad)
+```
+```{r}
+plot(x = df_ami_senti_word_PE_qual_no_na$GAD_score, y = df_ami_senti_word_PE_qual_no_na$PE_shift)
+```
+
+```{r}
+m3_PE_shift_SIAS <- lmer(PE_shift ~ SIAS_score + Prediction_1_confidence + (1|exam_num) +(1|ID), data =df_ami_senti_word_PE_qual_no_na)
+summary(m3_PE_shift_SIAS)
+```
+
+```{r}
+test_phq <- lmer(reg_word_ratio ~ PHQ_score*EVPE + (1|ID) + (1|exam_num),  data = df_ami_senti_word_PE_qual)
+
+summary(test_phq)
+pp_check(test_phq)
+```
+
+
+```{r}
+m3_ordinal_ami_senti_reg_word_ratio <- brm(reg_word_ratio ~ GAD_score*EVPE + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+```
+
+
+```{r}
+neu_ami_reg_ratio_EVPE_val_dotplot <- ggplot(df_ami_senti_word_PE_neu, aes(x = negative_emotionality.x, y = reg_word_ratio, color = ami_senti_group)) +
+  geom_point(size = 2, alpha = 0.7) +
+  facet_wrap(~ EVPE_val) + 
+  labs(
+    x = "Neuroticism (individual difference)",
+    y = "Ragulation word ratio",
+    title = "Relationship between Neuroticism and model interaction effect"
+  ) +
+  theme_classic()
+
+neu_ami_reg_ratio_EVPE_val_dotplot
+```
+
+```{r}
+gad_ami_reg_ratio_EVPE_val_dotplot <- ggplot(df_ami_senti_word_PE_qual, aes(x = GAD_score, y = reg_word_ratio, color = ami_senti_group)) +
+  geom_point(size = 2, alpha = 0.7) +
+  facet_wrap(~ EVPE_val) + 
+  labs(
+    x = "GAD (individual difference)",
+    y = "Regulation word ratio",
+    title = "Relationship between GAD and model interaction effect"
+  ) +
+  theme_classic()
+
+gad_ami_reg_ratio_EVPE_val_dotplot
+```
+```{r}
+rdm_ordinal_ami_senti_reg_word_ratio <- brm(ami_senti_group ~ reg_word_ratio * EVPE_val + (1 + reg_word_ratio * EVPE_val|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(rdm_ordinal_ami_senti_reg_word_ratio)
+pp_check(rdm_ordinal_ami_senti_reg_word_ratio)
+```
+
+```{r}
+rdm_ordinal_ami_senti_reg_word_ratio <- brm(ami_senti_group ~ reg_word_ratio + (1 + reg_word_ratio * EVPE_val|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE)
+summary(rdm_ordinal_ami_senti_reg_word_ratio)
+pp_check(rdm_ordinal_ami_senti_reg_word_ratio)
+```
+```{r}
+loo(rdm_ordinal_ami_senti_reg_word_ratio,m2_ordinal_ami_senti_reg_word_ratio_EVPE_val)
+```
+
+```{r}
+ranef_df <- ranef(rdm_ordinal_ami_senti_reg_word_ratio)$ID %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("ID")
+
+interaction_effects <- ranef_df %>%
+  select(ID, starts_with("Estimate.reg_word_ratio:EVPE_val"))
+```
+
+```{r}
+interaction_effects$ID <- as.integer(interaction_effects$ID)
+df_plot_neu <- df_neu %>%
+  left_join(interaction_effects, by = "ID") %>%
+  dplyr::rename(estimate = `Estimate.reg_word_ratio:EVPE_valpositive`)
+```
+## Neuro vs mem_senti
+```{r}
+cor_test <- cor.test(df_plot_neu$estimate, df_plot_neu$negative_emotionality)
+cor_test
+
+r_value  <- cor_test$estimate
+p_value  <- cor_test$p.value
+r2_value <- r_value^2
+
+```
+
+```{r}
+library(ggplot2)
+
+neu_ami_reg_ratio_EVPE_val_plot <- ggplot(df_plot_neu, aes(x = negative_emotionality, y = estimate)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "purple") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0(
+      "r = ", round(r_value, 2),
+      ", R² = ", round(r2_value, 2),
+      ", p = ", signif(p_value, 2)
+    ),
+    hjust = 1.1, vjust = 1.5, size = 4
+  ) +
+  labs(
+    x = "Neuroticism (individual difference)",
+    y = "Interaction Effect (reg_word_ratio × EVPE_val)",
+    title = "Relationship between Neuroticism and model interaction effect"
+  ) +
+  theme_classic()
+  
+neu_ami_reg_ratio_EVPE_val_plot
+```
+
+
+```{r}
+df_plot_mood <- df_qual %>%
+  left_join(interaction_effects, by = "ID") %>%
+  dplyr::rename(estimate = `Estimate.reg_word_ratio:EVPE_valpositive`)
+```
+
+## GAD vs. mem_senti
+```{r}
+cor_test_gad <- cor.test(df_plot_mood$estimate, df_plot_mood$GAD_score)
+cor_test_gad
+
+r_value  <- cor_test_gad$estimate
+p_value  <- cor_test_gad$p.value
+r2_value <- r_value^2
+
+```
+```{r}
+library(ggplot2)
+
+gad_ami_reg_ratio_EVPE_val_plot <- ggplot(df_plot_mood, aes(x = GAD_score, y = estimate)) +
+  geom_point(size = 2, alpha = 0.6, color = "skyblue2") +
+  geom_smooth(method = "lm", se = TRUE, color = "skyblue4") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0(
+      "r = ", round(r_value, 2),
+      ", R² = ", round(r2_value, 2),
+      ", p = ", signif(p_value, 2)
+    ),
+    hjust = 1.1, vjust = 1.5, size = 4
+  ) + 
+  labs(
+    x = "GAD score",
+    y = "Estimate of the interaction Effect \n(regulation ratio × EVPE valence)",
+    title = "Relationship between GAD and the interaction effect"
+  ) +
+  theme_classic()
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/GAD_EVPE_val_reg_ratio_int_AMI_senti.png",plot = gad_ami_reg_ratio_EVPE_val_plot, width = 6, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/GAD_EVPE_val_reg_ratio_int_AMI_sent.pdf",plot = gad_ami_reg_ratio_EVPE_val_plot, width = 6, heigh = 4, dpi = 300)
+gad_ami_reg_ratio_EVPE_val_plot
+```
+
+## wrap_facet GAD
+```{r}
+hist(df_plot_mood$GAD_score)
+summary(df_plot_mood$GAD_score)
+sd_gad <- sd(df_plot_mood$GAD_score)
+mean_gad <- mean(df_plot_mood$GAD_score)
+
+library(dplyr)
+# m2_ordinal_ami_senti_reg_EVPE_int <- brm(ami_senti_group ~ EVPE + reg_ratio + EVPE*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_ratio_PE)
+
+## with each exam GAD
+# df_plot_mood <- df_plot_mood %>%
+#   mutate(
+#     GAD_level = ifelse(
+#       GAD_score <= median(GAD_score, na.rm = TRUE),
+#       "Low GAD",
+#       "High GAD"
+#     ),
+#     GAD_level = factor(GAD_level, levels = c("Low GAD", "High GAD"))
+#   )
+```
+
+
+```{r}
+low_cut  <- quantile(df_plot_mood$GAD_score, 0.30, na.rm = TRUE)
+high_cut <- quantile(df_plot_mood$GAD_score, 0.70, na.rm = TRUE)
+
+df_plot_mood <- df_plot_mood %>%
+  mutate(
+    GAD_level = case_when(
+      GAD_score <= low_cut  ~ "Low GAD",
+      GAD_score >= high_cut ~ "High GAD",
+      TRUE                  ~ NA_character_
+    ),
+    GAD_level = factor(GAD_level,
+                       levels = c("Low GAD", "High GAD"))
+  )
+df_ami_senti_reg_PE_mood <- inner_join(df_ami_senti_ratio_PE, df_plot_mood, by = "ID")
+```
+
+```{r}
+# separate into two group
+high_gad_ami_senti_reg_PE <- df_ami_senti_reg_PE_mood %>% filter(GAD_level == "High GAD")
+low_gad_ami_senti_reg_PE <- df_ami_senti_reg_PE_mood %>% filter(GAD_level == "Low GAD")
+```
+```{r}
+# High GAD: memory_senti ~ EVPE_val + reg_ratio + EVPE*reg_ratio
+m7_ordinal_ami_senti_reg_EVPE_val_high_gad <- brm(ami_senti_group ~ EVPE_val + reg_ratio + EVPE_val*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = high_gad_ami_senti_reg_PE)
+summary(m7_ordinal_ami_senti_reg_EVPE_val_high_gad)
+```
+```{r}
+# High GAD: memory_senti ~ EVPE_val + reg_ratio + EVPE*reg_ratio
+m7_ordinal_ami_senti_reg_EVPE_high_gad <- brm(ami_senti_group ~ EVPE + reg_ratio + EVPE*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = high_gad_ami_senti_reg_PE)
+summary(m7_ordinal_ami_senti_reg_EVPE_high_gad)
+```
+```{r}
+# Low GAD: memory_senti ~ EVPE + reg_ratio + EVPE*reg_ratio
+m7_ordinal_ami_senti_reg_EVPE_val_low_gad <- brm(ami_senti_group ~ EVPE_val + reg_ratio + EVPE_val*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = low_gad_ami_senti_reg_PE)
+summary(m7_ordinal_ami_senti_reg_EVPE_val_low_gad)
+```
+```{r}
+# Low GAD: memory_senti ~ EVPE + reg_ratio + EVPE*reg_ratio
+m7_ordinal_ami_senti_reg_EVPE_low_gad <- brm(ami_senti_group ~ EVPE + reg_ratio + EVPE*reg_ratio + (1|ID) + (1|exam_num), family = cumulative("logit"), data = low_gad_ami_senti_reg_PE)
+summary(m7_ordinal_ami_senti_reg_EVPE_low_gad)
+```
+```{r}
+high_gad_ami_senti_EVPE_int_plotting <- conditional_effects(m7_ordinal_ami_senti_reg_EVPE_high_gad, effects = "reg_ratio:EVPE",
+  int_conditions = list(
+    EVPE = c(10, 0, -10)
+  ),
+  categorical = FALSE
+)
+high_gad_ami_senti_EVPE_int_plot <- high_gad_ami_senti_EVPE_int_plotting[["reg_ratio:EVPE"]]
+# high_gad_ami_senti_EVPE_int_plot_list <- plot(high_gad_ami_senti_EVPE_int_plotting, plot = FALSE)
+# high_had_ami_senti_EVPE_int_plot_main <- high_gad_ami_senti_EVPE_int_plot_list[[3]]
+# high_had_ami_senti_EVPE_int_plot_main
+```
+```{r}
+library(ggplot2)
+library(dplyr)
+
+high_gad_ami_senti_EVPE_int_plot <- high_gad_ami_senti_EVPE_int_plot %>%
+  mutate(
+    EVPE = factor(
+      EVPE,
+      levels = c(10, -10)
+    )
+  )
+
+high_gad_ami_senti_EVPE_int_plot_fn <- ggplot(
+  high_gad_ami_senti_EVPE_int_plot,
+  aes(
+    x = reg_ratio,
+    y = estimate__,
+    color = EVPE,
+    fill = EVPE,
+    group = EVPE
+  )
+) +
+  geom_ribbon(
+    aes(ymin = lower__, ymax = upper__),
+    alpha = 0.4,
+    color = NA
+  ) +
+  geom_line(linewidth = 1.2) +
+  # scale_color_manual(
+  #   values = c(
+  #     "10" = "#619CFF",
+  #     "0" = "#00BA38",
+  #     "-10" = "#F8766D"
+  #   )
+  # ) +
+  # scale_fill_manual(
+  #   values = c(
+  #     "10" = "#619CFF",
+  #     "0" = "#00BA38",
+  #     "-10" = "#F8766D"
+  #   )
+  # ) +
+  labs(
+    x = "Regulation proportion",
+    y = "Predicted memory valence category",
+    color = "PE",
+    fill = "PE",
+    title = "High General Anxiety"
+  ) +
+  theme_classic(base_size = 12)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_high_GAD_plot.pdf",plot = high_gad_ami_senti_EVPE_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_high_GAD_plot.eps",plot = high_gad_ami_senti_EVPE_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_high_GAD_plot.png",plot = high_gad_ami_senti_EVPE_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+high_gad_ami_senti_EVPE_int_plot_fn
+```
+```{r}
+high_gad_ami_senti_EVPE_val_int_plotting <- conditional_effects(
+  m7_ordinal_ami_senti_reg_EVPE_val_high_gad,
+  effects = "reg_ratio:EVPE_val"
+)
+
+names(high_gad_ami_senti_EVPE_val_int_plotting)
+
+high_gad_ami_senti_EVPE_val_int_plot <- high_gad_ami_senti_EVPE_val_int_plotting[["reg_ratio:EVPE_val"]]
+
+high_gad_ami_senti_EVPE_val_int_plot_fn <- ggplot(
+  high_gad_ami_senti_EVPE_val_int_plot,
+  aes(
+    x = reg_ratio,
+    y = estimate__,
+    color = factor(EVPE_val),
+    fill = factor(EVPE_val)
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower__,
+      ymax = upper__
+    ),
+    alpha = 0.4,
+    color = NA
+  ) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    x = "Regulation proportion",
+    y = "Predicted AMI sentiment",
+    color = "PE valence",
+    fill = "PE valence",
+    title = "High General Anxiety"
+  ) +
+  theme_classic(base_size = 12)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_high_GAD_plot.pdf",plot = high_gad_ami_senti_EVPE_val_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_high_GAD_plot.eps",plot = high_gad_ami_senti_EVPE_val_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_high_GAD_plot.png",plot = high_gad_ami_senti_EVPE_val_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+high_gad_ami_senti_EVPE_val_int_plot_fn
+```
+
+```{r}
+low_gad_ami_senti_EVPE_val_int_plotting <- conditional_effects(
+  m7_ordinal_ami_senti_reg_EVPE_val_low_gad,
+  effects = "reg_ratio:EVPE_val"
+)
+
+names(low_gad_ami_senti_EVPE_val_int_plotting)
+
+low_gad_ami_senti_EVPE_val_int_plot <- low_gad_ami_senti_EVPE_val_int_plotting[["reg_ratio:EVPE_val"]]
+
+low_gad_ami_senti_EVPE_val_int_plot_fn <- ggplot(
+  low_gad_ami_senti_EVPE_val_int_plot,
+  aes(
+    x = reg_ratio,
+    y = estimate__,
+    color = factor(EVPE_val),
+    fill = factor(EVPE_val)
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower__,
+      ymax = upper__
+    ),
+    alpha = 0.4,
+    color = NA
+  ) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    x = "Regulation proportion",
+    y = "Predicted AMI sentiment",
+    color = "PE valence",
+    fill = "PE valence",
+    title = "Low General Anxiety"
+  ) +
+  theme_classic(base_size = 12)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_low_GAD_plot.pdf",plot = low_gad_ami_senti_EVPE_val_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_low_GAD_plot.eps",plot = low_gad_ami_senti_EVPE_val_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_low_GAD_plot.png",plot = low_gad_ami_senti_EVPE_val_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+
+low_gad_ami_senti_EVPE_val_int_plot_fn
+```
+
+
+```{r}
+low_gad_ami_senti_EVPE_int_plotting <- conditional_effects(m7_ordinal_ami_senti_reg_EVPE_low_gad, effects = "reg_ratio:EVPE",
+  int_conditions = list(
+    EVPE = c(10, -10)
+  ),
+  categorical = FALSE
+)
+low_gad_ami_senti_EVPE_int_plot <- low_gad_ami_senti_EVPE_int_plotting[["reg_ratio:EVPE"]]
+```
+```{r}
+library(ggplot2)
+library(dplyr)
+
+low_gad_ami_senti_EVPE_int_plot <- low_gad_ami_senti_EVPE_int_plot %>%
+  mutate(
+    EVPE = factor(
+      EVPE,
+      levels = c(10, -10)
+    )
+  )
+
+low_gad_ami_senti_EVPE_int_plot_fn <- ggplot(
+  low_gad_ami_senti_EVPE_int_plot,
+  aes(
+    x = reg_ratio,
+    y = estimate__,
+    color = EVPE,
+    fill = EVPE,
+    group = EVPE
+  )
+) +
+  geom_ribbon(
+    aes(ymin = lower__, ymax = upper__),
+    alpha = 0.4,
+    color = NA
+  ) +
+  geom_line(linewidth = 1.2) +
+ 
+  labs(
+    x = "Regulation proportion",
+    y = "Predicted memory valence category",
+    color = "PE",
+    fill = "PE",
+    title = "Low General Anxiety"
+  ) +
+  theme_classic(base_size = 12)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_low_GAD_plot.pdf",plot = low_gad_ami_senti_EVPE_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_low_GAD_plot.eps",plot = low_gad_ami_senti_EVPE_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_low_GAD_plot.png",plot = low_gad_ami_senti_EVPE_int_plot_fn, width = 5, heigh = 4, dpi = 300)
+low_gad_ami_senti_EVPE_int_plot_fn
+```
+
+```{r}
+# trait GAD
+library(patchwork)
+
+gad_ami_senti_EVPE_int_side_plot <- 
+  low_gad_ami_senti_EVPE_int_plot_fn +
+  high_gad_ami_senti_EVPE_int_plot_fn +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+gad_ami_senti_EVPE_int_side_plot
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_GAD_side_plot.pdf", gad_ami_senti_EVPE_int_side_plot, width = 10, height = 4, dpi = 300, device = cairo_pdf)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_GAD_side_plot.eps", gad_ami_senti_EVPE_int_side_plot, width = 10, height = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_GAD_side_plot.png", gad_ami_senti_EVPE_int_side_plot, width = 10, height = 4, dpi=600)
+```
+```{r}
+# trait GAD vs. PE_val
+library(patchwork)
+
+gad_ami_senti_EVPE_val_int_side_plot <- 
+  low_gad_ami_senti_EVPE_val_int_plot_fn +
+  high_gad_ami_senti_EVPE_val_int_plot_fn +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+gad_ami_senti_EVPE_val_int_side_plot
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_GAD_side_plot.pdf", gad_ami_senti_EVPE_val_int_side_plot, width = 10, height = 4, dpi = 300, device = cairo_pdf)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_GAD_side_plot.eps", gad_ami_senti_EVPE_val_int_side_plot, width = 10, height = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_GAD_side_plot.png", gad_ami_senti_EVPE_val_int_side_plot, width = 10, height = 4, dpi=600)
+```
+
+
+```{r}
+high_ce <- conditional_effects(
+  m7_ordinal_ami_senti_reg_EVPE_high_gad,
+  effects = "EVPE_val:reg_ratio",
+  categorical = FALSE
+)
+
+plot_highgad_df <- high_ce[["EVPE_val:reg_ratio"]]
+```
+```{r}
+ggplot(
+  plot_highgad_df,
+  aes(
+    x = reg_ratio,
+    y = estimate__,
+    color = EVPE_val,
+    fill = EVPE_val,
+    group = EVPE_val
+  )
+) +
+  geom_ribbon(
+    aes(ymin = lower__, ymax = upper__),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    x = "Regulation ratio",
+    y = "Predicted AMI sentiment",
+    color = "EVPE valence",
+    fill = "EVPE valence"
+  ) +
+  theme_classic(base_size = 14)
+```
+```{r}
+low_ce <- conditional_effects(
+  m7_ordinal_ami_senti_reg_EVPE_low_gad,
+  effects = "EVPE_val:reg_ratio",
+  categorical = FALSE
+)
+
+plot_lowgad_df <- low_ce[["EVPE_val:reg_ratio"]]
+```
+
+```{r}
+ggplot(
+  plot_lowgad_df,
+  aes(
+    x = reg_ratio,
+    y = estimate__,
+    color = EVPE_val,
+    fill = EVPE_val,
+    group = EVPE_val
+  )
+) +
+  geom_ribbon(
+    aes(ymin = lower__, ymax = upper__),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    x = "Regulation ratio",
+    y = "Predicted AMI sentiment",
+    color = "EVPE valence",
+    fill = "EVPE valence"
+  ) +
+  theme_classic(base_size = 14)
+```
+```{r}
+cond <- data.frame(
+  reg_ratio = quantile(
+    low_gad_ami_senti_reg_PE$reg_ratio,
+    probs = c(.25, .75),
+    na.rm = TRUE
+  )
+)
+
+cond$reg_level <- c("Low regulation", "High regulation")
+
+ce <- conditional_effects(
+  m7_ordinal_ami_senti_reg_EVPE_low_gad,
+  effects = "EVPE_val",
+  conditions = cond,
+  categorical = TRUE
+)
+
+plot_df <- ce[[1]]
+head(plot_df)
+```
+```{r}
+ggplot(
+  plot_df,
+  aes(
+    x = EVPE_val,
+    y = estimate__,
+    color = cats__
+  )
+) +
+  geom_point(size = 3, position = position_dodge(width = .3)) +
+  geom_errorbar(
+    aes(ymin = lower__, ymax = upper__),
+    width = .1,
+    position = position_dodge(width = .3)
+  ) +
+  facet_wrap(~ cond__) +
+  labs(
+    x = "EVPE valence",
+    y = "Predicted probability",
+    color = "AMI sentiment"
+  ) +
+  theme_classic()
+```
+
+```{r}
+low_gad_ami_senti_EVPE_val_int_plotting <- conditional_effects(m7_ordinal_ami_senti_reg_EVPE_low_gad)
+
+low_gad_ami_senti_EVPE_val_int_plot_list <- plot(low_gad_ami_senti_EVPE_val_int_plotting, plot = FALSE)
+low_had_ami_senti_EVPE_val_int_plot_main <- low_gad_ami_senti_EVPE_val_int_plot_list[[3]]
+low_had_ami_senti_EVPE_val_int_plot_main
+```
+```{r}
+m5_ordinal_ami_senti_reg_EVPE_GAD_int <- brm(ami_senti_group ~ EVPE*reg_ratio*GAD_score + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_reg_PE_mood)
+```
+```{r}
+summary(m5_ordinal_ami_senti_reg_EVPE_GAD_int)
+```
+
+# Threeway int: mem_senti ~ EVPE + reg+GAD
+## dense GAD
+```{r}
+df_ami_senti_word_PE_mood
+```
+
+```{r}
+m_ordinal_ami_senti_reg_word_EVPE_exam_GAD_int <- brm(ami_senti_group ~ EVPE*reg_word_ratio*GAD + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_word_PE_mood)
+summary(m_ordinal_ami_senti_reg_word_EVPE_exam_GAD_int)
+```
+```{r}
+summary(m_ordinal_ami_senti_reg_word_EVPE_exam_GAD_int)
+```
+
+```{r}
+m6_ordinal_ami_senti_reg_EVPE_exam_GAD_int <- brm(ami_senti_group ~ EVPE*reg_ratio*GAD + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_reg_PE_mood)
+```
+```{r}
+summary(m6_ordinal_ami_senti_reg_EVPE_exam_GAD_int)
+```
+
+```{r}
+low_GAD  <- mean(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE) - sd(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE)
+high_GAD <- mean(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE) + sd(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE)
+
+ce_3way <- conditional_effects(
+  m6_ordinal_ami_senti_reg_EVPE_exam_GAD_int,
+  effects = "reg_ratio:EVPE",
+  conditions = data.frame(
+    GAD = c(low_GAD, high_GAD)
+  ),
+  int_conditions = list(
+    EVPE = c(10, -10)
+  )
+)
+
+```
+```{r}
+plot_list <- plot(ce_3way, plot = FALSE)
+plot_list[[1]]
+```
+```{r}
+plot_df <- ce_3way[[1]]
+plot_df$EVPE <- round(plot_df$EVPE, 2)
+plot_df$GAD_level <- factor(
+  plot_df$cond__,
+  levels = c(1, 2),
+  labels = c(
+    paste0("Low General Anxiety (", round(low_GAD, 1), ")"),
+    paste0("High General Anxiety (", round(high_GAD, 1), ")")
+  )
+)
+plot_df$EVPE <- factor(
+  plot_df$EVPE,
+  levels = c(10, -10)
+)
+```
+### threeway int plotting
+```{r}
+ami_mem_senti_PE_reg_GAD_level_plot <- ggplot(plot_df,
+       aes(x = reg_ratio,
+           y = estimate__,
+           color = factor(EVPE))) +
+  geom_line(linewidth = 0.8) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__,
+                  fill = factor(EVPE)),
+                alpha = 0.4,
+  color = NA,
+  linewidth = 0) +
+#   scale_color_manual(
+#   values = c(
+#     "10" = "#619CFF",
+#     "0" = "#00BA38",
+#     "-10" = "#F8766D"
+#   )
+# ) +
+#   scale_color_manual(
+#   values = c(
+#     "10" = "#49beaa",
+#     "0" = "#f3a712",
+#     "-10" = "#db2b39"
+#   )
+# ) +
+  # scale_fill_manual(
+  #   values = c(
+  #     "10" = "#619CFF",
+  #     "0" = "#00BA38",
+  #     "-10" = "#F8766D"
+  #   )
+  # ) +
+  # scale_fill_manual(
+  # values = c(
+  #   "10" = "#49beaa",
+  #   "0" = "#f3a712",
+  #   "-10" = "#db2b39"
+  # )
+  # ) +
+  ylab("Predicted memory valence category") +
+  xlab("Regulation proportion") + 
+  labs(color = "PE", fill = "PE") +
+  facet_wrap(~ GAD_level) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "sans",size = 14),
+    strip.text = element_text(size = 14),
+    strip.background = element_blank())
+ami_mem_senti_PE_reg_GAD_level_plot
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_GAD_level_plot.pdf",plot = ami_mem_senti_PE_reg_GAD_level_plot, width = 8, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_GAD_level_plot.eps",plot = ami_mem_senti_PE_reg_GAD_level_plot, width = 8, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_reg_GAD_level_plot.png",plot = ami_mem_senti_PE_reg_GAD_level_plot, width = 8, heigh = 4, dpi = 300)
+```
+
+```{r}
+m6_ordinal_ami_senti_reg_EVPE_val_exam_GAD_int <- brm(ami_senti_group ~ EVPE_val*reg_ratio*GAD + (1|ID) + (1|exam_num), family = cumulative("logit"), data = df_ami_senti_reg_PE_mood)
+```
+```{r}
+summary(m6_ordinal_ami_senti_reg_EVPE_val_exam_GAD_int)
+```
+```{r}
+low_GAD  <- mean(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE) - sd(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE)
+high_GAD <- mean(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE) + sd(df_ami_senti_reg_PE_mood$GAD, na.rm = TRUE)
+
+ce_PE_val_3way <- conditional_effects(
+  m6_ordinal_ami_senti_reg_EVPE_val_exam_GAD_int,
+  effects = "reg_ratio:EVPE_val",
+  conditions = data.frame(
+    GAD = c(low_GAD, high_GAD)
+  ),
+  int_conditions = list(
+    EVPE_val = c("negative", "positive")
+  ),
+  categorical = FALSE
+)
+
+```
+```{r}
+ce_PE_val_3way_list <- plot(ce_PE_val_3way, plot = FALSE)
+ce_PE_val_3way_list[[1]]
+```
+```{r}
+ce_PE_val_3way_df <-ce_PE_val_3way[["reg_ratio:EVPE_val"]]
+ce_PE_val_3way_df$GAD_level <- factor(
+  ce_PE_val_3way_df$cond__,
+  levels = c(1, 2),
+  labels = c(
+    paste0("Low General Anxiety (", round(low_GAD, 1), ")"),
+    paste0("High General Anxiety (", round(high_GAD, 1), ")")
+  )
+)
+
+
+```
+### threeway int plotting
+```{r}
+ami_mem_senti_PE_val_reg_GAD_level_plot <- ggplot(ce_PE_val_3way_df ,
+       aes(x = reg_ratio,
+           y = estimate__,
+           color = EVPE_val,
+           fill = EVPE_val,
+           group_EVPE_val)) +
+  geom_line(linewidth = 0.8) +
+  geom_ribbon(aes(ymin = lower__, ymax = upper__,
+                  fill = EVPE_val),
+                alpha = 0.4,
+  color = NA,
+  linewidth = 0) +
+  ylab("Predicted memory valence category") +
+  xlab("Regulation proportion") + 
+  labs(color = "PE", fill = "PE") +
+  facet_wrap(~ GAD_level) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "sans",size = 14),
+    strip.text = element_text(size = 14),
+    strip.background = element_blank())
+ami_mem_senti_PE_val_reg_GAD_level_plot
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_GAD_level_plot.pdf",plot = ami_mem_senti_PE_val_reg_GAD_level_plot, width = 8, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_GAD_level_plot.eps",plot = ami_mem_senti_PE_val_reg_GAD_level_plot, width = 8, heigh = 4, dpi = 300)
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/ami_mem_senti_PE_val_reg_GAD_level_plot.png",plot = ami_mem_senti_PE_val_reg_GAD_level_plot, width = 8, heigh = 4, dpi = 300)
+```
+## PHQ vs. ami_senti
+```{r}
+cor_test_phq <- cor.test(df_plot_mood$estimate, df_plot_mood$PHQ_score)
+cor_test_phq
+
+r_value  <- cor_test_phq$estimate
+p_value  <- cor_test_phq$p.value
+r2_value <- r_value^2
+
+PHQ_ami_reg_ratio_EVPE_val_plot <- ggplot(df_plot_mood, aes(x = PHQ_score, y = estimate)) +
+  geom_point(size = 2, alpha = 0.6, color = "skyblue2") +
+  geom_smooth(method = "lm", se = TRUE, color = "skyblue4") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0(
+      "r = ", round(r_value, 2),
+      ", R² = ", round(r2_value, 2),
+      ", p = ", signif(p_value, 2)
+    ),
+    hjust = 1.1, vjust = 1.5, size = 4
+  ) + 
+  labs(
+    x = "PHQ score",
+    y = "Estimate of the interaction Effect \n(regulation ratio × EVPE valence)",
+    title = "Relationship between PHQ and the interaction effect"
+  ) +
+  theme_classic()
+#ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PHQ_EVPE_val_reg_ratio_int_AMI_senti.png",plot = PHQ_ami_reg_ratio_EVPE_val_plot, width = 6, heigh = 4, dpi = 300)
+#ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/PHQ_EVPE_val_reg_ratio_int_AMI_sent.pdf",plot = PHQ_ami_reg_ratio_EVPE_val_plot, width = 6, heigh = 4, dpi = 300)
+PHQ_ami_reg_ratio_EVPE_val_plot
+```
+
+## SIAS vs. ami_senti
+```{r}
+cor_test_sias <- cor.test(df_plot_mood$estimate, df_plot_mood$SIAS_score)
+cor_test_sias
+
+r_value  <- cor_test_sias$estimate
+p_value  <- cor_test_sias$p.value
+r2_value <- r_value^2
+
+SIAS_ami_reg_ratio_EVPE_val_plot <- ggplot(df_plot_mood, aes(x = SIAS_score, y = estimate)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "purple") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0(
+      "r = ", round(r_value, 2),
+      ", R² = ", round(r2_value, 2),
+      ", p = ", signif(p_value, 2)
+    ),
+    hjust = 1.1, vjust = 1.5, size = 4
+  ) + 
+  labs(
+    x = "SIAS score (individual difference)",
+    y = "Interaction Effect (reg_word_ratio × EVPE_val)",
+    title = "Relationship between SIAS and model interaction effect"
+  ) +
+  theme_classic()
+  
+SIAS_ami_reg_ratio_EVPE_val_plot
+```
+## OCIR vs. ami_senti
+```{r}
+cor_test_ocir <- cor.test(df_plot_mood$estimate, df_plot_mood$OCIR_score)
+cor_test_ocir
+
+r_value  <- cor_test_ocir$estimate
+p_value  <- cor_test_ocir$p.value
+r2_value <- r_value^2
+
+OCIR_ami_reg_ratio_EVPE_val_plot <- ggplot(df_plot_mood, aes(x = OCIR_score, y = estimate)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "purple") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0(
+      "r = ", round(r_value, 2),
+      ", R² = ", round(r2_value, 2),
+      ", p = ", signif(p_value, 2)
+    ),
+    hjust = 1.1, vjust = 1.5, size = 4
+  ) + 
+  labs(
+    x = "OCIR score (individual difference)",
+    y = "Interaction Effect (reg_word_ratio × EVPE_val)",
+    title = "Relationship between OCIR and model interaction effect"
+  ) +
+  theme_classic()
+  
+OCIR_ami_reg_ratio_EVPE_val_plot
+```
+
+```{r}
+cor.test(df_plot_mood$GAD_score, df_plot_mood$OCIR_score)
+
+```
+
+## ERQ vs. ami_senti
+```{r}
+cor_test_erq <- cor.test(df_plot_mood$estimate, df_plot_mood$ERQ_score)
+cor_test_erq
+
+r_value  <- cor_test_erq$estimate
+p_value  <- cor_test_erq$p.value
+r2_value <- r_value^2
+
+ERQ_ami_reg_ratio_EVPE_val_plot <- ggplot(df_plot_mood, aes(x = ERQ_score, y = estimate)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "purple") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0(
+      "r = ", round(r_value, 2),
+      ", R² = ", round(r2_value, 2),
+      ", p = ", signif(p_value, 2)
+    ),
+    hjust = 1.1, vjust = 1.5, size = 4
+  ) + 
+  labs(
+    x = "ERQ score (individual difference)",
+    y = "Interaction Effect (reg_word_ratio × EVPE_val)",
+    title = "Relationship between ERQ and model interaction effect"
+  ) +
+  theme_classic()
+  
+ERQ_ami_reg_ratio_EVPE_val_plot
+```
+```{r}
+cor_test_erq_rep <- cor.test(df_plot_mood$estimate, df_plot_mood$ERQ_rep)
+cor_test_erq_rep
+
+r_value  <- cor_test_erq_rep$estimate
+p_value  <- cor_test_erq_rep$p.value
+r2_value <- r_value^2
+
+ERQ_rep_ami_reg_ratio_EVPE_val_plot <- ggplot(df_plot_mood, aes(x = ERQ_rep, y = estimate)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "purple") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0(
+      "r = ", round(r_value, 2),
+      ", R² = ", round(r2_value, 2),
+      ", p = ", signif(p_value, 2)
+    ),
+    hjust = 1.1, vjust = 1.5, size = 4
+  ) +
+  labs(
+    title = "Relationship between Trait reappraisal and model interaction effect",
+    x = "ERQ Reappraisal score (individual difference)",
+    y = "Interaction Effect (reg_word_ratio × EVPE_val)"
+  ) +
+  theme_classic()
+  
+ERQ_rep_ami_reg_ratio_EVPE_val_plot
+```
+
+
+###FAB analysis
+```{r}
+df_response_senti <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/emaData_F24_resp_sentiment_v5.csv")
+
+df_exam_senti_intensity <- df_response_senti %>% dplyr::group_by(ID, exam_num) %>% dplyr::summarise(intensity_exam = mean(intensity_resp, na.rm = TRUE))
+```
+
+```{r}
+df_senti_ami_exam_fab <- inner_join(df_senti_ami_exam, df_exam_senti_intensity, by = c("ID", "exam_num"))
+```
+
+
+
+# ordering PE and reg_ratio
+```{r}
+ordered_data_EVPE <- df_ami_ratio_PE[order(-df_ami_ratio_PE$EVPE, -df_ami_ratio_PE$reg_ratio),]
+ordered_data_EVPE
+```
+
+```{r}
+ordered_data_PE_1 <- df_ami_ratio_PE[order(-df_ami_ratio_PE$PE_1, -df_ami_ratio_PE$reg_ratio),]
+ordered_data_PE_1
+```
+
+```{r}
+ordered_data_PE_2 <- df_ami_ratio_PE[order(-df_ami_ratio_PE$PE_2, -df_ami_ratio_PE$reg_ratio),]
+ordered_data_PE_2
+```
+
+

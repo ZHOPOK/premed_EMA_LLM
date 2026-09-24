@@ -1,0 +1,4667 @@
+---
+title: "emoLearn_F24_API_v4_analysis"
+author: "Runan Wang"
+date: "2026-02-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(afex)
+library(emmeans)
+library(knitr)
+library(tidyverse)
+library(compute.es)
+library(car)
+library(ggplot2)
+library(multcomp)
+library(pastecs)
+library(WRS2)
+library(Hmisc)
+library(tidyverse)
+library(SuppDists)
+library(ggpubr)
+library(readxl)
+library(ez)
+library(lme4)
+library(corrplot)
+library(psych)
+library(ggpubr) # for Q plot (normality check)
+library(openxlsx)
+library(colorspace)
+library(ggrepel)
+library(directlabels)
+library(ggplot2)
+library(reshape2)
+library(plyr)
+library(scales)
+library(dplyr)
+library(wesanderson)
+library(brms)
+library(stringr)
+library(performance)
+library(see)
+library(tidyr)
+library(lubridate)
+library(tibble)
+library(bayesplot)
+library(sjPlot)
+`mutate` <- dplyr::mutate
+`select` <- dplyr::select
+`recode` <- dplyr::recode
+`summarise` <- dplyr::summarise
+`describe` <- psych::describe
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load in data
+```{r cars}
+df_output <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/scripts/NLP/emaData_F24_trainset_conf_labeled_full.csv")
+#df_supp <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/scripts/NLP/emaData_F24_trainset_conf_labeled_supp.csv")
+
+df <- df_output %>% filter(exam_num != "")
+df <- df%>% arrange(ID, exam_num, ResponseNumber)
+
+```
+
+
+```{r}
+library(dplyr)
+library(tibble)
+
+library(dplyr)
+library(tibble)
+
+collapse_text_by_label <- function(label_api_text, text_phrase) {
+  r <- rle(label_api_text)
+  block_id <- rep(seq_along(r$lengths), r$lengths)
+
+  tibble(
+    block_id = block_id,
+    label_api_text = label_api_text,
+    text_phrase = text_phrase
+  ) %>%
+    group_by(block_id) %>%
+    summarise(
+      collapsed_text_type = first(label_api_text),
+      collapsed_text      = paste(text_phrase, collapse = " "),
+      phrase_count        = n(),
+      .groups = "drop"
+    )
+}
+
+
+```
+```{r}
+df_collapsed_text <- df %>%
+  group_by(ID, exam_num, ResponseNumber) %>%
+  group_modify(~ collapse_text_by_label(
+    label_api_text = .x$label_api,
+    text_phrase    = .x$text_phrase
+  )) %>%
+  ungroup()
+```
+
+
+```{r}
+write.csv(df_collapsed_text,"/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/ER/input/emaData_F24_conf_collapsed_ER_input.csv", row.names = FALSE)
+```
+
+
+## Precrocess data
+```{r cars}
+# remove na
+df_no_na <- na.omit(df)
+
+# add exam_resp number 
+df_no_na <- df_no_na %>%group_by(ID, exam_num, ResponseNumber) %>% dplyr::mutate(dummy = 1) %>%  ungroup() %>% group_by(ID, exam_num, ResponseNumber) %>% dplyr::mutate(exam_resp = cur_group_id()) %>% group_by(ID) %>% dplyr::mutate(exam_resp = dense_rank(exam_resp)) %>% ungroup() %>%select(-dummy)
+
+```
+
+```{r}
+# str_count(df_no_na$text_phrase[2], '[\\w\']+')
+# '[\\w\']+' count apostrophe as one word
+# Count word
+# to count each phrases and add to the word_count row
+for (i in (1:nrow(df_no_na))){
+  phrase = df_no_na$text_phrase[i]
+  df_no_na$word_count[i] <- str_count(phrase,'[\\w\']+')
+}
+```
+# Save df_no_na
+```{r}
+write.csv(df_no_na, "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/processed/premedEMA_API_F24_conf_processed.csv", row.names = FALSE)
+```
+```{r}
+df_no_na <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/processed/premedEMA_API_F24_conf_processed.csv")
+```
+
+```{r}
+df_no_na <- df_no_na %>% mutate(label_api_text = case_when(label_api == -1 ~ "Expression",
+                                                           label_api == 0 ~ "Neither",
+                                                           label_api == 1 ~ "Regulation"))
+```
+
+```{r}
+# check data
+summary(df_no_na %>% filter(label_api_text == "Regulation"))
+summary(df_no_na %>% filter(label_api_text == "Expression"))
+summary(df_no_na %>% filter(label_api_text == "Neither"))
+```
+# Prelimnary Plots
+## Fig1.Label frequency
+```{r pressure, echo=FALSE}
+Fig1_label_count_bar_plot <- df_no_na %>% ggplot(aes(x = label_api_text,
+           fill = label_api_text)) +
+  geom_bar(position=position_dodge(.5), size=0.55,  width=0.5, alpha = 0.8, colour="black") +
+  geom_text(
+    stat = "count",
+    aes(label = ..count..),
+    vjust = -0.3,  # moves the text above the bar
+    size = 4
+  ) +
+  scale_fill_brewer(palette = "Set3")+
+  labs(y = "Counts", x = "Labels") +
+  scale_x_discrete(labels=c("Expression", "Neither", "Regulation")) +
+  theme_classic() +
+  theme(legend.position = "none")
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig1_bar_label_count.png",height=4, width=5, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig1_bar_label_count.pdf",height=4, width=5, dpi=300)
+```
+```{r}
+Fig1_label_count_bar_plot
+```
+
+## Select cols
+```{r}
+df_select <- df_no_na %>% select(ID, exam_num, ResponseNumber, exam_resp, text_phrase, label_api_text, label_api, word_count)
+```
+## Stacked bar plot by sub
+```{r}
+df_by_sub <- df_select %>% dplyr::count(ID, label_api_text) %>% pivot_wider(names_from = label_api_text, values_from = n, values_fill = 0)
+
+df_by_sub <- df_by_sub %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+ordered_ids <- df_by_sub %>%
+  arrange(desc(reg_ratio)) %>%
+  pull(ID)
+
+df_by_sub_long <- df_by_sub %>%
+  select(ID, Expression, exp_ratio, Neither, nei_ratio, Regulation, reg_ratio ) %>%
+  pivot_longer(cols = c(exp_ratio, nei_ratio, reg_ratio),
+               names_to = "label", values_to = "count") %>%
+  group_by(ID) %>%
+  ungroup() %>%
+  mutate(ID = factor(ID, levels = ordered_ids))
+```
+
+## Fig2. stacked bar, by sub
+```{r}
+dev.new(width=20, height=5)
+stacked_sub_bar_plot <- ggplot(df_by_sub_long, aes(x = ID, y = count, fill = label)) +
+  geom_bar(stat = "identity", alpha = 0.8, color = "black", width = 0.8, size = .1, linewidth = 0.1) +
+  scale_fill_brewer(palette = "Set3", name = "", labels = c("Expression", "Neither", "Regulation")) +
+  labs(
+    #title = "The stacked bar plot by subjects",
+    x = "Subject ID",
+    y = "Percentage",
+    fill = "Label"
+  ) +
+  #scale_fill_discrete(name = "Classification", labels = c("Expression", "Neither", "Regulation")) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_classic(base_size = 20) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+          legend.position = "bottom",
+  legend.direction = "horizontal")
+ ggsave("/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig1_stacked_bar_by_sub.pdf", width = 30, height = 8, dpi=300, device=cairo_pdf)
+  ggsave("/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig1_stacked_bar_by_sub.png", width = 30, height = 8, dpi=300)
+    ggsave("/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig1_stacked_bar_by_sub.eps", width = 30, height = 8, dpi=300)
+
+stacked_sub_bar_plot
+```
+## by response
+```{r}
+df_by_resp <- df_select %>% dplyr::count(ResponseNumber, label_api_text) %>% pivot_wider(names_from = label_api_text, values_from = n, values_fill = 0)
+
+df_by_resp <- df_by_resp %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+
+df_by_resp_long <- df_by_resp %>%
+  select(ResponseNumber, Expression, exp_ratio, Neither, nei_ratio, Regulation, reg_ratio) %>%
+  pivot_longer(cols = c(exp_ratio, nei_ratio, reg_ratio),
+               names_to = "label", values_to = "count") %>%
+  dplyr::group_by(ResponseNumber) %>%
+  ungroup()
+```
+
+```{r}
+count(df_no_na$ResponseNumber)
+```
+
+## Fig3. stacked bar plot by response
+```{r}
+dev.new(width=4, height=3)
+stacked_bar_plot_by_resp <- ggplot(df_by_resp_long, aes(x = ResponseNumber, y = count, fill = label)) +
+  geom_bar(stat = "identity", alpha = 0.8, color = "black", width = 0.8, size = .1) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "The stacked bar plot by response number",
+    x = "Response Number",
+    y = "Percentage",
+    fill = "Label"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_classic()
+ ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig3_stacked_bar_by_respNo.pdf", width = 4, height = 3, dpi=300, device=cairo_pdf)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig3_stacked_bar_by_respNo.png", width = 4, height = 3, dpi=300)
+
+stacked_bar_plot_by_resp
+```
+## By response, word_count
+```{r}
+df_by_resp_word_count <- df_select %>% dplyr::group_by(ResponseNumber, label_api_text) %>% summarise(avg_word_count = mean(word_count, na.rm = TRUE), .groups = "drop") %>% ungroup()
+```
+
+```{r}
+dev.new(width=4, height=3)
+avg_word_count_by_resp <- ggplot(df_by_resp_word_count, aes(x = ResponseNumber, y = avg_word_count, fill = label_api_text)) +
+  geom_bar(stat = "identity", alpha = 0.8, color = "black", width = 0.8, size = .1) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "The stacked bar plot by response number",
+    x = "Response Number",
+    y = "Average word count",
+    fill = "Label"
+  ) +
+  theme_classic()
+# ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v4_fullset/Fig3_stacked_bar_by_respNo.pdf", width = 4, height = 3, dpi=300, device=cairo_pdf)
+# ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v4_fullset/Fig3_stacked_bar_by_respNo.png", width = 4, height = 3, dpi=300)
+
+avg_word_count_by_resp
+```
+
+```{r}
+# Each subject, each exam, each response, ratio of each label
+df_by_sub_by_resp <- df_select %>% dplyr::count(ID, exam_num, ResponseNumber, label_api_text) %>% pivot_wider(names_from = label_api_text, values_from = n, values_fill = 0)
+
+df_by_sub_by_resp <- df_by_sub_by_resp %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+
+df_by_sub_by_resp_long <- df_by_sub_by_resp %>%
+  select(ID, exam_num, ResponseNumber, Expression, exp_ratio, Neither, nei_ratio, Regulation, reg_ratio ) %>%
+  pivot_longer(cols = c(exp_ratio, nei_ratio, reg_ratio),
+               names_to = "label", values_to = "count") %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  ungroup()
+```
+
+```{r}
+# Adjust the level of factors
+df_by_sub_by_resp_long$label <- factor(
+  df_by_sub_by_resp_long$label,
+  levels = c("exp_ratio", "nei_ratio", "reg_ratio"),
+  labels = c("Expression", "Neither", "Regulation")
+)
+# 
+# # Count number of responses per exam
+# exam_counts <- df_long_by_sub_by_resp %>%
+#   distinct(ID, exam_num, ResponseNumber) %>%
+#   dplyr::count(ID, exam_num, name = "n_responses")
+# 
+# df_plot <- df_long_by_sub_by_resp %>%
+#   left_join(exam_counts, by = c("ID", "exam_num")) %>%
+#   mutate(label = factor(label, levels = c("exp_ratio", "nei_ratio", "reg_ratio"),
+#                         labels = c("Expression", "Neither", "Regulation")))
+
+```
+
+```{r}
+for (i in unique(df_by_sub_by_resp_long$ID)){
+  iSub <- df_by_sub_by_resp_long %>% filter(ID == i)
+  fname=sprintf('/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/subjects_bar_plots/sub%s_bar_plot_by_exam_by_resp.pdf', i )
+  ggplot(iSub, aes(x = factor(ResponseNumber), y = count, fill = label)) +
+    geom_bar(stat = "identity", position = "fill", color = "black") +
+    facet_wrap(~ exam_num, scales = "free_x") +
+    scale_y_continuous(labels = scales::percent_format()) +
+    scale_fill_brewer(palette = "Set3") +
+    labs(
+      x = "Response Number",
+      y = "Proportion",
+      fill = "Label",
+      title = sprintf("Sub_%s_Label Proportions per Response (by Exam)", i)
+    ) +
+    theme_classic(base_size = 14) +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold", size = 12),
+      axis.text.x = element_text(angle = 0, hjust = 0.5),
+      plot.title=element_text(size = 14, hjust=0.5, vjust=0.7)
+    )
+  ggsave(fname,height=5, width=6, dpi=300)
+}
+```
+## Fig4. By_exam_resp
+```{r}
+df_by_exam_resp <- df_select %>% dplyr::count(ID, exam_num, ResponseNumber,exam_resp, label_api_text) %>% pivot_wider(names_from = label_api_text, values_from = n, values_fill = 0)
+
+df_by_exam_resp <- df_by_exam_resp %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+
+df_by_exam_resp_long <- df_by_exam_resp %>%
+  select(ID, exam_num, ResponseNumber, exam_resp, Expression, exp_ratio, Neither, nei_ratio, Regulation, reg_ratio ) %>%
+  pivot_longer(cols = c(exp_ratio, nei_ratio, reg_ratio),
+               names_to = "label", values_to = "count") %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber, exam_resp) %>%
+  ungroup()
+```
+# Fig5. exam_num vs. label ratio
+```{r}
+exam_label_ratio_change_plot <- ggplot(df_by_exam_resp_long, aes(x = exam_num, y = count, color = label)) +
+  stat_summary(
+    fun = mean, geom = "line", size = 1.2,
+    aes(group = label)
+  ) +
+  stat_summary(
+    fun = mean, geom = "point", size = 3,
+    aes(shape = label)
+  ) +
+  scale_color_brewer(palette = "Set3") +
+  geom_line(aes(group = ID), alpha = 0.1) +
+  coord_cartesian(ylim=c(-0.1, 1.1)) + 
+  labs(
+    title = "Change in Label Proportion Across Responses",
+    x = "Exam Order",
+    y = "Mean Proportion",
+    color = "Label",
+    shape = "Label"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_classic(base_size = 14)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig4_ratio_across_exam.png",height=4, width=5, dpi=300)
+    ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig4_ratio_across_exam.pdf",height=4, width=5, dpi=300)
+    
+exam_label_ratio_change_plot
+```
+# Fig6. exam_resp vs. reg_ratio
+```{r}
+df_by_exam_resp_reg <- df_by_exam_resp_long %>% filter (label == "reg_ratio")
+reg_ratio_across_all_resp_plot <- ggplot(df_by_exam_resp_reg, aes(x = exam_resp, y = count)) +
+  stat_summary(
+    fun = mean, geom = "line", size = 1.2,
+    aes(group = label)
+  ) +
+  stat_summary(
+    fun = mean, geom = "point", size = 3,
+    aes(shape = label)
+  ) +
+  scale_color_brewer(palette = "Set3") +
+  geom_line(aes(group = ID), alpha = 0.1) +
+  coord_cartesian(ylim=c(-0.1, 1.1)) + 
+  labs(
+    title = "Change in Label Proportion Across Responses",
+    x = "Exam Response Order (exam_resp)",
+    y = "Mean Proportion",
+    color = "Label",
+    shape = "Label"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_classic(base_size = 14)
+
+reg_ratio_across_all_resp_plot
+```
+
+# Fig. Individual plot
+```{r}
+iSub_exam_resp_reg <- df_by_exam_resp_long %>% filter (ID == "10004" & label == "reg_ratio")
+ggplot(iSub_exam_resp_reg, aes(x = factor(exam_resp), y = count)) +
+  geom_line(aes(group = interaction(ID, label)), alpha = 0.5) +# subject lines
+  # stat_summary(fun = mean, geom = "line", size = 1.2) +  # mean line
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  scale_color_brewer(palette = "Set3") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  coord_cartesian(ylim=c(-0.1, 1.1)) + 
+  labs(
+    title = "Proportion Change of Regulation Across Responses ",
+    x = "Exam Response Order (exam_resp)",
+    y = "Proportion"
+  ) +
+  theme_classic()+
+  theme(plot.title=element_text(size = 14))
+
+  ggsave('/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v4_fullset/subjects_reg_dot_plots/reg/sub_dot_plot_by_exam_resp.pdf',height=4, width=6, dpi=300)
+```
+
+```{r}
+# iSub_exam_resp_reg <- df_by_exam_resp_long %>% filter (ID == "10004" & label == "reg_ratio")
+# ggplot(iSub_exam_resp_reg, aes(x = factor(ResponseNumber), y = count)) +
+#   geom_line(aes(group = interaction(ID, label)), alpha = 0.5) +# subject lines
+#   # stat_summary(fun = mean, geom = "line", size = 1.2) +  # mean line
+#   stat_summary(fun = mean, geom = "point", size = 3) +
+#   scale_color_brewer(palette = "Set3") +
+#   facet_wrap(~ exam_num, scales = "free_x") +
+#   scale_y_continuous(labels = scales::percent_format()) +
+#   coord_cartesian(ylim=c(-0.1, 1.1)) + 
+#   labs(
+#     title = "Proportion Change of Regulation Across Responses ",
+#     x = "Exam Response Order (exam_resp)",
+#     y = "Proportion"
+#   ) +
+#   theme_classic(base_size = 14)
+# 
+#   # ggsave(fname,height=5, width=6, dpi=300)
+```
+## regulation_ratio
+```{r}
+df_by_exam_resp_long_reg <- df_by_exam_resp_long %>% filter(label == "reg_ratio")
+for (i in unique(df_by_exam_resp_long_reg $ID)){
+  iSub_reg <- df_by_exam_resp_long_reg  %>% filter(ID == i)
+  fname=sprintf('/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/subjects_reg_dot_plots/reg/sub%s_dot_plot_by_exam_resp.pdf', i )
+  ggplot(iSub_reg, aes(x = factor(exam_resp), y = count)) +
+  geom_line(aes(group = interaction(ID, label)), alpha = 0.5) +# subject lines
+  # stat_summary(fun = mean, geom = "line", size = 1.2) +  # mean line
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  scale_color_brewer(palette = "Set3") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  coord_cartesian(ylim=c(-0.1, 1.1)) + 
+  labs(
+    title = "Proportion Change of Regulation Across Responses ",
+    x = "Exam Response Order (exam_resp)",
+    y = "Proportion"
+  ) +  theme_classic()+
+  theme(plot.title=element_text(size = 14))
+
+  ggsave(fname,height=4, width=6, dpi=300)
+}
+```
+
+```{r}
+ggplot(df_by_exam, aes(x = ID, y = reg_ratio)) +
+  geom_point() +  # this adds the points
+  geom_smooth(method = "loess", se = FALSE) +  # this adds the loess line
+  labs(x = "slphrs", y = "anx") +
+  ggtitle("Anxiety scores of students by sleep durations with a loess line")  # you can use these to change the titles of your axes
+```
+## label_count vs. PE, exam and response
+### data prep
+#### df_by_sub_by_resp
+Within each exam, for each response, what the reg_ratio for each PE_1_bin
+```{r}
+# Load in prediction file
+df_PE <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/premedEMA_f2024_predictors_df.csv")
+colnames(df_PE)[1] = "ID"
+# drop the wrong grade
+df_PE_correct <- df_PE %>% filter(shown_wrong !="1")
+
+df_PE <- df_PE_correct %>% mutate(PE_1_val = case_when(PE_1 < 0 ~ "negative",
+                                               PE_1 > 0 ~ "positive",
+                                               PE_1 == 0 ~ "zero"), 
+                          PE_1_mag = abs(PE_1),
+                          PE_2_val = case_when(PE_2 < 0 ~ "negative",
+                                               PE_2 > 0 ~ "positive",
+                                               PE_2 == 0 ~ "zero"),
+                          PE_2_mag = abs(PE_2),
+                          EVPE_val = case_when(EVPE < 0 ~ "negative",
+                                               EVPE > 0 ~ "positive",
+                                               EVPE == 0 ~ "zero"),
+                          EVPE_mag = abs(EVPE)
+                    )
+
+```
+```{r}
+# The word count is for each phrase
+df_select_tmp <- df_no_na %>% select(c(ID, exam_num, ResponseNumber, label_api, label_api_text, word_count))
+# Sum up the word_count for each response and each category
+df_select_tmp <- df_select_tmp %>% dplyr::group_by(ID, exam_num, ResponseNumber, label_api_text) %>% summarise(word_count_sum = sum(word_count)) %>% ungroup()
+df_select_tmp_wide <- df_select_tmp %>% pivot_wider(names_from = label_api_text, values_from = word_count_sum)
+
+df_select_tmp_wide[, c("Expression", "Neither", "Regulation")] <- replace(df_select_tmp_wide[, c("Expression", "Neither", "Regulation")], is.na(df_select_tmp_wide[, c("Expression", "Neither", "Regulation")]), 0)
+
+# Calculate ratio of word
+df_by_sub_by_resp_tmp <- df_select_tmp_wide %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+df_PE$exam_num <- as.integer(df_PE$exam_num)
+df_by_sub_by_resp_PE <- inner_join(df_by_sub_by_resp_tmp, df_PE, by = c("ID", "exam_num"))
+
+```
+
+```{r}
+# df_by_sub_by_resp_PE1 <- df_by_sub_by_resp_PE %>% filter(!is.na(PE_1))
+# df_by_sub_by_resp_PE1 <- df_by_sub_by_resp_PE1 %>% mutate(
+#     PE_1_bin = cut(PE_1, breaks = 10, include.lowest = TRUE, ordered_result = TRUE),
+#     PE_1_abs_bin = cut(PE_1_mag, breaks = 10, include.lowest = TRUE, ordered_result = TRUE)# use factor integer code # use factor integer code
+#   )
+# reg_ratio_PE_1_plot <- ggplot(df_by_sub_by_resp_PE1, aes(x = exam_num, y = reg_ratio, fill = PE_1_bin)) +
+# geom_bar(stat = "identity", position = "dodge") +
+# labs(
+#   title = paste0("Proportion of Regulation by PE Bin, Exam", sep=""),,
+#   x = "Exam Number",
+#   y = "Proportion of Regulation",
+#   fill = "PE Bin"
+# ) +
+# theme_minimal() +
+# theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# 
+# reg_ratio_PE_1_plot
+```
+
+#### df_sub_by_exam
+```{r}
+df_select_exam_tmp <- df_no_na %>% select(c(ID, exam_num, ResponseNumber, label_api, label_api_text, word_count))
+
+df_select_exam_tmp <- df_select_exam_tmp %>% group_by(ID, exam_num, label_api_text) %>% summarise(word_count_sum = sum(word_count)) %>% ungroup()
+
+df_select_exam_tmp_wide <- df_select_exam_tmp %>% pivot_wider(names_from = label_api_text, values_from = word_count_sum)
+
+df_select_exam_tmp_wide[, c("Expression", "Neither", "Regulation")] <- replace(df_select_exam_tmp_wide[, c("Expression", "Neither", "Regulation")], is.na(df_select_exam_tmp_wide[, c("Expression", "Neither", "Regulation")]), 0)
+
+# Calculate ratio of word
+df_by_sub_by_exam_tmp <- df_select_exam_tmp_wide %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+df_PE$exam_num <- as.integer(df_PE$exam_num)
+df_by_sub_by_exam_PE <- inner_join(df_by_sub_by_exam_tmp, df_PE, by = c("ID", "exam_num")) 
+```
+```{r}
+df_by_sub_by_exam_PE1 <- df_by_sub_by_exam_PE %>% filter(!is.na(PE_1))
+df_by_sub_by_exam_PE1 <- df_by_sub_by_exam_PE1 %>% mutate(
+    PE_1_bin = cut(PE_1, breaks = 10, include.lowest = TRUE, ordered_result = TRUE),
+    PE_1_abs_bin = cut(PE_1_mag, breaks = 10, include.lowest = TRUE, ordered_result = TRUE)# use factor integer code
+  )
+```
+##### Fig. PE_1 vs. reg_ratio
+```{r}
+reg_ratio_PE_1_plot <- ggplot(df_by_sub_by_exam_PE1, aes(x = exam_num, y = reg_ratio, fill = PE_1_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Regulation by PE1 Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "PE1 Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/PE_reg/per_exam/PE1_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/PE_reg/per_exam/PE1_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+reg_ratio_PE_1_plot
+
+reg_ratio_PE_1_abs_plot <- ggplot(df_by_sub_by_exam_PE1, aes(x = exam_num, y = reg_ratio, fill = PE_1_abs_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Regulation by abs PE1 Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "abs PE1 Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/abs_PE_reg/per_exam/abs_PE1_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/abs_PE_reg/per_exam/abs_PE1_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+reg_ratio_PE_1_abs_plot
+```
+##### Fig. PE_1 vs. exp_ratio
+```{r}
+exp_ratio_PE_1_plot <- ggplot(df_by_sub_by_exam_PE1, aes(x = exam_num, y = exp_ratio, fill = PE_1_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Expression by PE1 Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Expression",
+  fill = "PE1 Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/PE_reg/per_exam/PE1_exp_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/PE_reg/per_exam/PE1_exp_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+exp_ratio_PE_1_plot
+
+exp_ratio_PE_1_abs_plot <- ggplot(df_by_sub_by_exam_PE1, aes(x = exam_num, y = exp_ratio, fill = PE_1_abs_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Expression by abs PE1 Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Expression",
+  fill = "abs PE1 Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/abs_PE_reg/per_exam/abs_PE1_exp_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/abs_PE_reg/per_exam/abs_PE1_exp_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+exp_ratio_PE_1_abs_plot
+```
+
+##### Fig. PE_2 vs. reg_ratio
+```{r}
+df_by_sub_by_exam_PE2 <- df_by_sub_by_exam_PE %>% filter(!is.na(PE_2))
+df_by_sub_by_exam_PE2 <- df_by_sub_by_exam_PE2 %>% mutate(
+    PE_2_bin = cut(PE_2, breaks = 10, include.lowest = TRUE, ordered_result = TRUE),
+    PE_2_abs_bin = cut(PE_2_mag, breaks = 10, include.lowest = TRUE, ordered_result = TRUE)# use factor integer code
+  )
+```
+
+```{r}
+reg_ratio_PE_2_plot <- ggplot(df_by_sub_by_exam_PE2, aes(x = exam_num, y = reg_ratio, fill = PE_2_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Regulation by PE2 Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "PE2 Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/PE_reg/per_exam/PE2_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/PE_reg/per_exam/PE2_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+reg_ratio_PE_2_plot
+
+reg_ratio_PE_2_abs_plot <- ggplot(df_by_sub_by_exam_PE2, aes(x = exam_num, y = reg_ratio, fill = PE_2_abs_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Regulation by abs PE2 Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "abs PE2 Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/abs_PE_reg/per_exam/abs_PE2_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/abs_PE_reg/per_exam/abs_PE2_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+reg_ratio_PE_2_abs_plot
+
+```
+##### Fig. EVPE vs. reg_ratio
+```{r}
+df_by_sub_by_exam_EVPE <- df_by_sub_by_exam_PE %>% filter(!is.na(EVPE))
+df_by_sub_by_exam_EVPE <- df_by_sub_by_exam_EVPE %>% mutate(
+    EVPE_bin = cut(EVPE, breaks = 10, include.lowest = TRUE, ordered_result = TRUE),
+    EVPE_abs_bin = cut(EVPE_mag, breaks = 10, include.lowest = TRUE, ordered_result = TRUE)# use factor integer code
+  )
+```
+```{r}
+reg_ratio_EVPE_plot <- ggplot(df_by_sub_by_exam_EVPE, aes(x = exam_num, y = reg_ratio, fill = EVPE_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Regulation by EVPE Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "EVPE Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/PE_reg/per_exam/EVPE_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/PE_reg/per_exam/EVPE_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+reg_ratio_EVPE_plot
+
+reg_ratio_EVPE_abs_plot <- ggplot(df_by_sub_by_exam_EVPE, aes(x = exam_num, y = reg_ratio, fill = EVPE_abs_bin)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Regulation by abs EVPE Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "abs EVPE Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/abs_PE_reg/per_exam/abs_EVPE_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/v5/abs_PE_reg/per_exam/abs_EVPE_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+
+reg_ratio_EVPE_abs_plot
+```
+
+```{r}
+# select temporal information from df_no_na
+df_select_time <- df_no_na %>% select(ID, exam_num, ResponseNumber, grade_reveal_time, RecordedDate, time_since_grade_reveal_mins, text_phrase, label_api_text, label_api, word_count)
+```
+```{r}
+#transfer time into numeric format
+df_select_time <- df_select_time %>% mutate(reveal_time_posix = mdy_hm(grade_reveal_time),
+                                            record_time_posix = mdy_hm(RecordedDate))
+#class(df_select_time$record_time_posix)
+```
+```{r}
+df_by_resp_time <- df_select_time %>% dplyr::group_by (ID, exam_num, ResponseNumber, record_time_posix, time_since_grade_reveal_mins) %>% summarise (exp_count = sum(label_api_text == "Expression"),
+    reg_count = sum(label_api_text == "Regulation"),
+    nei_count = sum(label_api_text == "Neither"),
+    exp_word_count = sum(word_count[label_api_text == "Expression"]),
+    # Sum word_count ONLY for phrases with 'regulation' label
+    reg_word_count = sum(word_count[label_api_text == "Regulation"]),
+    # Sum word_count ONLY for phrases with 'neither' label
+    nei_word_count = sum(word_count[label_api_text == "Neither"]),
+    total_phrases = n(), 
+    .groups = 'drop' # This tells dplyr to remove the grouping structure after summarise
+  ) %>%
+  dplyr::mutate(
+    # Calculate ratios
+    exp_ratio = exp_count / total_phrases,
+    reg_ratio = reg_count / total_phrases,
+    nei_ratio = nei_count / total_phrases
+  ) %>%
+  # Arrange by ID and time for time series modeling
+  arrange(ID, time_since_grade_reveal_mins)
+
+# df_by_resp_time$ID <- as.integer(df_by_resp_time$ID)
+# df_by_resp_time_tmp <- df_by_resp_time %>%
+#  rowid_to_column("original_row_index")
+df_by_resp_time_PE <- inner_join(df_by_resp_time, df_PE, by=c("ID", "exam_num"))
+```
+
+```{r}
+df_by_sub_resp_PE <- df_by_resp_time_PE[order(df_by_resp_time_PE$ID, df_by_resp_time_PE$exam_num, df_by_resp_time_PE$ResponseNumber, df_by_resp_time_PE$record_time_posix),]
+
+df_by_sub_resp_PE_1_clean <- df_by_sub_resp_PE %>% filter(!is.na(PE_1))
+
+#PE_1_is binned into 10 bins
+df_by_sub_resp_PE_1 <- df_by_sub_resp_PE_1_clean %>% mutate(
+    PE_1_bin = cut(PE_1, breaks = 10, include.lowest = TRUE, ordered_result = TRUE),
+    PE_1_bin_label = as.character(PE_1_bin),
+    PE_1_bin_id = paste0("bin_", as.integer(PE_1_bin))  # use factor integer code
+  )
+
+print(head(df_by_sub_resp_PE_1))
+```
+
+# Response-level ratio
+```{r}
+df_by_sub_resp_PE_1_plot <- df_by_sub_resp_PE_1 %>% group_by(exam_num, ResponseNumber, PE_1_binned) %>% summarise(sum_reg_count = sum(reg_count), sum_exp_count = sum(exp_count),
+sum_nei_count = sum(nei_count), sum_reg_word = sum(reg_word_count), sum_exp_word = sum(exp_word_count), sum_nei_word = sum(nei_word_count), sum_abs_PE_1 = sum(PE_1_abs), .groups = 'drop')
+
+df_by_sub_resp_abs_PE_1_plot <- df_by_sub_resp_PE_1 %>% group_by(exam_num, ResponseNumber, PE_1_abs_binned) %>% summarise(sum_reg_count = sum(reg_count), sum_exp_count = sum(exp_count),
+sum_nei_count = sum(nei_count), sum_reg_word = sum(reg_word_count), sum_exp_word = sum(exp_word_count), sum_nei_word = sum(nei_word_count), sum_abs_PE_1 = sum(PE_1_abs), .groups = 'drop')
+```
+
+```{r}
+df_abs_normalized <- df_by_sub_resp_abs_PE_plot %>%
+  mutate(
+    total_phrase_count = sum_reg_count + sum_exp_count + sum_nei_count,
+    reg_prop = sum_reg_count / total_phrase_count,
+    exp_prop = sum_exp_count / total_phrase_count
+  )
+```
+
+```{r}
+df_normalized <- df_by_sub_resp_PE_plot %>%
+  mutate(
+    total_phrase_count = sum_reg_count + sum_exp_count + sum_nei_count,
+    reg_prop = sum_reg_count / total_phrase_count,
+    exp_prop = sum_exp_count / total_phrase_count
+  )
+```
+
+```{r}
+bin_summary_table <- df_by_sub_resp_PE_clean %>%
+  group_by(PE_1_binned) %>%
+  summarise(
+    Min_PE_in_Bin = min(PE_1, na.rm = TRUE), # na.rm=TRUE to handle potential NAs
+    Max_PE_in_Bin = max(PE_1, na.rm = TRUE),
+    Count_in_Bin = n(),
+    .groups = 'drop'
+  ) %>%
+  # Optionally, arrange by bin order to make it neat
+  arrange(PE_1_binned)
+
+bin_summary_table
+```
+```{r}
+#add the bin range to PE_df
+df_num_normalized <- inner_join(df_normalized, bin_summary_table, by = "PE_1_binned")
+```
+
+```{r}
+bin_abs_summary_table <- df_by_sub_resp_PE_clean %>%
+  group_by(PE_1_abs_binned) %>%
+  summarise(
+    Min_PE_abs_in_Bin = min(PE_1_abs, na.rm = TRUE), # na.rm=TRUE to handle potential NAs
+    Max_PE_abs_in_Bin = max(PE_1_abs, na.rm = TRUE),
+    Count_in_Bin = n(),
+    .groups = 'drop'
+  ) %>%
+  # Optionally, arrange by bin order to make it neat
+  arrange(PE_1_abs_binned)
+
+bin_abs_summary_table
+```
+```{r}
+df_abs_num_normalized <- inner_join(df_abs_normalized, bin_abs_summary_table, by = "PE_1_abs_binned")
+```
+
+
+### reg_ratio vs.abs_PE
+```{r}
+for (i in 1:4){
+  df_abs_normalized$PE_1_abs_binned_label <- as.character(df_abs_normalized$PE_1_abs_binned)
+  df_normalized_exam_current <- df_abs_normalized %>% filter(exam_num == i)
+  plotname_png <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/abs_PE_reg/abs_PE_reg_ratio_exam",i,".png",sep = "")
+  plotname_pdf <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/v5/Figure/abs_PE_reg/abs_PE_reg_ratio_exam",i,".pdf",sep = "")
+  ggplot(df_normalized_abs_exam_current, aes(x = ResponseNumber, y = reg_prop, fill = PE_1_abs_binned_label)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ exam_num) +
+  labs(
+    title = paste0("Proportion of Regulation by abs(PE Bin, Exam)",i, sep=""),,
+    x = "Response Number",
+    y = "Proportion of Regulation",
+    fill = "PE Bin (abs)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  # ggsave(plotname_png,height=4, width=5, dpi=300)
+  # ggsave(plotname_pdf,height=4, width=5, dpi=300)
+}
+```
+```{r}
+df_normalized_abs_exam_current <- df_abs_num_normalized %>% filter(exam_num == i)
+  plotname_png <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_reg/abs_PE_reg_ratio_exam",i,".png",sep = "")
+  plotname_pdf <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_reg/abs_PE_reg_ratio_exam",i,".pdf",sep = "")
+  ggplot(df_normalized_abs_exam_current, aes(x = ResponseNumber, y = reg_prop, fill = PE_1_abs_binned_num)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ exam_num) +
+  labs(
+    title = paste0("Proportion of Regulation by abs(PE Bin), Exam",i, sep=""),,
+    x = "Response Number",
+    y = "Proportion of Regulation",
+    fill = "PE Bin (abs)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### exp_ratio vs. abs_PE
+```{r}
+for (i in 1:4){
+  df_normalized_abs_exam_current <- df_abs_normalized %>% filter(exam_num == i)
+  plotname_png <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_exp/abs_PE_exp_ratio_exam",i,".png",sep = "")
+  plotname_pdf <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_exp/abs_PE_exp_ratio_exam",i,".pdf",sep = "")
+  ggplot(df_normalized_abs_exam_current, aes(x = ResponseNumber, y = exp_prop, fill = PE_1_abs_binned)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ exam_num) +
+  labs(
+    title = paste0("Proportion of Expression by abs(PE Bin), Exam",i, sep=""),,
+    x = "Response Number",
+    y = "Proportion of Expression",
+    fill = "PE Bin (abs)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  ggsave(plotname_png,height=4, width=5, dpi=300)
+  ggsave(plotname_pdf,height=4, width=5, dpi=300)
+}
+```
+### reg_ratio vs. PE
+```{r}
+for (i in 1:4){
+  df_normalized_exam_current <- df_normalized %>% filter(exam_num == i)
+  plotname_png <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_reg/PE_reg_ratio_exam",i,".png",sep = "")
+  plotname_pdf <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_reg/PE_reg_ratio_exam",i,".pdf",sep = "")
+  ggplot(df_normalized_exam_current, aes(x = ResponseNumber, y = reg_prop, fill = PE_1_binned)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ exam_num) +
+  labs(
+    title = paste0("Proportion of Regulation by PE Bin, Exam",i, sep=""),,
+    x = "Response Number",
+    y = "Proportion of Regulation",
+    fill = "PE Bin"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  ggsave(plotname_png,height=4, width=5, dpi=300)
+  ggsave(plotname_pdf,height=4, width=5, dpi=300)
+}
+```
+### exp_ratio vs. PE
+```{r}
+for (i in 1:4){
+  df_normalized_exam_current <- df_normalized %>% filter(exam_num == i)
+  plotname_png <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_exp/PE_exp_ratio_exam",i,".png",sep = "")
+  plotname_pdf <- paste0("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_exp/PE_exp_ratio_exam",i,".pdf",sep = "")
+  ggplot(df_normalized_exam_current, aes(x = ResponseNumber, y = exp_prop, fill = PE_1_binned)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ exam_num) +
+  labs(
+    title = paste0("Proportion of Expression by PE Bin, Exam",i, sep=""),,
+    x = "Response Number",
+    y = "Proportion of Expression",
+    fill = "PE Bin"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  ggsave(plotname_png,height=4, width=5, dpi=300)
+  ggsave(plotname_pdf,height=4, width=5, dpi=300)
+}
+```
+
+
+### data prep
+```{r}
+df_by_exam_PE_plot <- df_by_sub_resp_PE %>% group_by(exam_num, bin_id) %>% summarise(sum_reg_count = sum(reg_count), sum_exp_count = sum(exp_count),
+sum_nei_count = sum(nei_count), sum_reg_word = sum(reg_word_count), sum_exp_word = sum(exp_word_count), sum_nei_word = sum(nei_word_count), sum_abs_PE_1 = sum(PE_1_abs), .groups = 'drop')
+
+df_by_exam_abs_PE_plot <- df_by_sub_resp_PE %>% group_by(exam_num,PE_1_abs_bin_id) %>% summarise(sum_reg_count = sum(reg_count), sum_exp_count = sum(exp_count),
+sum_nei_count = sum(nei_count), sum_reg_word = sum(reg_word_count), sum_exp_word = sum(exp_word_count), sum_nei_word = sum(nei_word_count), sum_abs_PE_1 = sum(PE_1_abs), .groups = 'drop')
+```
+
+```{r}
+df_abs_PE_exam_normalized <- df_by_exam_abs_PE_plot %>%
+  mutate(
+    total_phrase_count = sum_reg_count + sum_exp_count + sum_nei_count,
+    reg_prop = sum_reg_count / total_phrase_count,
+    exp_prop = sum_exp_count / total_phrase_count
+  )
+```
+
+```{r}
+df_PE_exam_normalized <- df_by_exam_PE_plot %>%
+  mutate(
+    total_phrase_count = sum_reg_count + sum_exp_count + sum_nei_count,
+    reg_prop = sum_reg_count / total_phrase_count,
+    exp_prop = sum_exp_count / total_phrase_count
+  )
+```
+
+### reg_ratio vs. PE exam
+```{r}
+ggplot(df_abs_PE_exam_normalized, aes(x = exam_num, y = reg_prop, fill = PE_1_abs_bin_label)) +
+geom_bar(stat = "identity", position = "dodge") +
+scale_fill_viridis_d(option = "D") +
+labs(
+  title = paste0("Proportion of Regulation by abs(PE Bin), Exam", sep=""),
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "PE Bin (abs)"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_reg/per_exam/abs_PE_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_reg/per_exam/abs_PE_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+```
+```{r}
+ggplot(df_PE_exam_normalized, aes(x = exam_num, y = reg_prop, fill = PE_1_binned)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Regulation by PE Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Regulation",
+  fill = "PE Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_reg/per_exam/PE_reg_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_reg/per_exam/PE_reg_ratio_exam.pdf",height=4, width=6, dpi=300)
+```
+
+```{r}
+ggplot(df_abs_PE_exam_normalized, aes(x = exam_num, y = exp_prop, fill = PE_1_abs_bin_label)) +
+geom_bar(stat = "identity", position = "dodge") +
+scale_fill_viridis_d(option = "D") +
+labs(
+  title = paste0("Proportion of Expression by abs(PE Bin), Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Expression",
+  fill = "PE Bin (abs)"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_exp/per_exam/abs_PE_exp_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/abs_PE_exp/per_exam/abs_PE_exp_ratio_exam.pdf",height=4, width=6, dpi=300)
+```
+
+```{r}
+ggplot(df_PE_exam_normalized, aes(x = exam_num, y = exp_prop, fill = PE_1_binned)) +
+geom_bar(stat = "identity", position = "dodge") +
+labs(
+  title = paste0("Proportion of Expression by PE Bin, Exam", sep=""),,
+  x = "Exam Number",
+  y = "Proportion of Expression",
+  fill = "PE Bin"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_exp/per_exam/PE_exp_ratio_exam.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/PE_exp/per_exam/PE_exp_ratio_exam.pdf",height=4, width=6, dpi=300)
+```
+
+## 
+```{r}
+df_by_phrase_id <- df_no_na %>% dplyr::group_by(ID, exam_resp) %>% dplyr::mutate(phrase_id = as.integer(row_number())) %>% ungroup()
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+df_by_phrase_id_exam1 <- df_by_phrase_id %>% filter(exam_num == 1, ResponseNumber == 2)
+df_phrase_props_all <- df_by_phrase_id %>%
+  dplyr::count(phrase_id, label_api_text) %>%
+  complete(
+    phrase_id,
+    label_api_text = c("Expression", "Regulation", "Neither"),
+    fill = list(n = 0)
+  ) %>%
+  group_by(phrase_id) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+df_phrase_props_15 <- df_phrase_props_all %>% filter(phrase_id <= 15)
+```
+
+```{r}
+ggplot(df_phrase_props_15, aes(x = phrase_id, y = prop, group = label_api_text, color = label_api_text)) +
+  geom_point(aes(size = n),alpha = 0.8) +
+  geom_line() +
+  labs(
+    title = "Proportion of Labels by Phrase Index, all exams",
+    x = "Phrase Index",
+    y = "Proportion",
+    color = "Label"
+  ) +
+  theme_minimal()
+```
+```{r}
+df_per_subject <- df_by_phrase_id %>%
+  dplyr::count(ID, phrase_id, label_api_text) %>%
+  complete(ID, phrase_id, label_api_text = c("Expression", "Regulation", "Neither"), fill = list(n = 0)) %>%
+  group_by(ID, phrase_id) %>%
+  mutate(prop = n / sum(n)) %>%  # proportion within each phrase index for each subject
+  ungroup()
+
+df_summary <- df_per_subject %>%
+  group_by(phrase_id, label_api_text) %>%
+  summarise(
+    mean_prop = mean(prop, na.rm = TRUE),
+    var_prop = var(prop, na.rm = TRUE),   # <-- subject variance
+    sd_prop = sd(prop, na.rm = TRUE),
+    n = n(),
+    se_prop = sd_prop / sqrt(n),
+    .groups = "drop"
+  )
+
+df_summary <- df_summary %>%
+  mutate(
+    lower = mean_prop - se_prop,
+    upper = mean_prop + se_prop
+  )
+```
+
+```{r}
+df_summary_15 <- df_summary %>% filter(phrase_id <= 15)
+
+ggplot(df_summary_15, aes(x = phrase_id, y = mean_prop, color = label_api_text, fill = label_api_text)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_line(size = 1) +
+  labs(
+    title = "Mean Proportion of Labels by Phrase Index (± SEM)",
+    x = "Phrase Index",
+    y = "Proportion",
+    color = "Label",
+    fill = "Label"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+ggplot(df_phrase_props_all, aes(x = phrase_id, y = prop, color = label_api_text)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "Proportion of Labels by Phrase Index, all exams",
+    x = "Phrase Index",
+    y = "Proportion",
+    color = "Label"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# df_subject_phrase_props <- df_by_phrase_id %>%
+#   filter(exam_num == 1, ResponseNumber == 1) %>%
+#   group_by(ID, phrase_id, label_api_text) %>%
+#   summarise(n = n(), .groups = "drop") %>%
+#   group_by(ID, phrase_id) %>%
+#   mutate(prop = n / sum(n)) %>%
+#   ungroup()
+
+```
+```{r}
+# library(ggplot2)
+# 
+# ggplot(df_plot_indiv, aes(x = phrase_id, y = factor(ID), color = label_api_text)) +
+#   geom_point(size = 2, alpha = 0.8) +
+#   labs(
+#     title = "Label Trajectory per Subject (Exam 1, Response 1)",
+#     x = "Phrase Index",
+#     y = "Subject ID",
+#     color = "Label"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.y = element_blank(),  # Hide long subject ID labels (optional)
+#     axis.ticks.y = element_blank()
+#   )
+```
+## Label transition: exp - reg
+```{r}
+exam_list <- c(1:4)
+## reg and exp position relation
+for (iExam in exam_list){
+  df_by_phrase_id_posit <- df_by_phrase_id %>%
+  filter(exam_num == iExam) %>%
+  group_by(ID, ResponseNumber) %>%
+  arrange(phrase_id) %>%
+  mutate(
+  prev_label = lag(label_api_text),
+  follows_expression = label_api_text == "Regulation" & prev_label == "Expression"
+  ) %>%
+  summarise(prop_follow_expr = mean(follows_expression, na.rm = TRUE)) %>%
+  ungroup() %>%
+  filter(!is.na(prop_follow_expr))
+  
+  file_dir <- "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/label_transition/adjacent"
+  if(!exists(file_dir)){
+    dir.create(file_dir, recursive = TRUE)
+  }
+  filename_pdf <- paste0("/exp_reg_transition_exam", iExam,".pdf")
+  filename_png <- paste0("/exp_reg_transition_exam", iExam,".png")
+  plot_title <- paste0("Trend of Regulation Following Expression, Exam", iExam)
+  ggplot(df_by_phrase_id_posit, aes(x = ResponseNumber, y = prop_follow_expr)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, color = "darkgreen") +
+  labs(
+    title = plot_title,
+    x = "Responsse across all exams",
+    y = "Proportion of Regulation Phrases that Follow Expression"
+  ) +
+  theme_minimal() 
+  ggsave(paste0(file_dir,filename_pdf),height=4, width=6, dpi=300)
+  ggsave(paste0(file_dir,filename_png),height=4, width=6, dpi=300)
+}
+```
+
+```{r}
+df_transitions <- df_by_phrase_id %>%
+  filter(exam_num == 4) %>%
+  group_by(ID, exam_resp) %>%
+  arrange(phrase_id) %>%
+  mutate(
+    label_curr = label_api_text,
+    label_prev = lag(label_api_text)
+  ) %>%
+  filter(!is.na(label_prev))  # remove first phrase of each response
+```
+
+```{r}
+df_transition_counts <- df_transitions %>%
+  dplyr::count(label_prev, label_curr, name = "n")
+
+df_transition_props <- df_transition_counts %>%
+  dplyr::group_by(label_prev) %>%
+  dplyr::mutate(prop = n / sum(n)) %>%
+  ungroup()
+```
+```{r}
+library(ggplot2)
+
+ggplot(df_transition_props, aes(x = label_prev, y = label_curr, fill = prop)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "blue") +
+  labs(
+    title = "Transition Probabilities Between Labels",
+    x = "Previous Phrase Label",
+    y = "Current Phrase Label",
+    fill = "Proportion"
+  ) +
+  theme_minimal()
+
+```
+```{r}
+ggplot(df_transition_props, aes(x = label_prev, y = prop, fill = label_curr)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Label Transition Probabilities (Next Label by Previous Label), Exam 4",
+    x = "Previous Label",
+    y = "Proportion of Next Labels",
+    fill = "Next Label"
+  ) +
+  theme_minimal()
+
+```
+
+### Exam: Non-repeat label transition
+```{r}
+for (iExam in exam_list){
+  df_collapsed <- df_by_phrase_id %>%
+    filter(exam_num == iExam) %>%
+    arrange(ID, ResponseNumber, phrase_id) %>%
+    group_by(ID, ResponseNumber) %>%
+    summarise(
+      label_seq = list(rle(label_api_text)$values),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      from = map(label_seq, ~ head(.x, -1)),
+      to = map(label_seq, ~ tail(.x, -1))
+    ) %>%
+    select(ID, ResponseNumber, from, to) %>%
+    unnest(c(from, to))
+  
+  df_transition_counts <- df_collapsed %>%
+    dplyr::count(from, to, name = "n")
+  
+  df_transition_props <- df_transition_counts %>%
+    group_by(from) %>%
+    mutate(prop = n / sum(n)) %>%
+    ungroup()
+  
+  label_order <- c("Regulation", "Neither", "Expression")
+  
+  df_transition_props <- df_transition_props %>%
+    mutate(
+      from = factor(from, levels = label_order),
+      to = factor(to, levels = label_order)
+    )
+  
+  ggplot(df_transition_props, aes(x = from, y = to, fill = prop)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "white", high = "skyblue4", limits = c(0,1)) +
+    labs(
+      title = paste0("Transition Probabilities (Collapsed Label Runs), Exam", iExam),
+      x = "From Label",
+      y = "To Label",
+      fill = "Proportion"
+    ) +
+    theme_classic()
+  file_dir <- "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/label_transition/collapsed"
+  if(!dir.exists(file_dir)){
+    dir.create(file_dir, recursive = TRUE)
+  }
+  filename_pdf <- paste0("/conf_label_transition_exam", iExam,".pdf")
+  filename_png <- paste0("/conf_label_transition_exam", iExam,".png")
+  ggsave(paste0(file_dir,filename_pdf),height=4, width=6, dpi=300)
+  ggsave(paste0(file_dir,filename_png),height=4, width=6, dpi=300)
+  
+  label_order <- c("Regulation", "Neither", "Expression")
+
+  df_transition_props <- df_transition_props %>%
+    mutate(
+      from = factor(from, levels = label_order),
+      to = factor(to, levels = label_order),
+      transition = paste(from, "→", to),
+      prop_label = round(prop, 2)
+    )
+  write.csv(df_transition_props, paste0(file_dir, "/transition_props_exam", iExam, ".csv"), row.names = FALSE)
+
+  ggplot(df_transition_props, aes(x = transition, y = prop, fill = from)) +
+  geom_col( ) +
+  geom_text(aes(label = prop_label), vjust = -0.3, size = 3.5) +
+  labs(
+    title = paste0("Transition Proportions Between Labels (Collapsed phrases), Exam",iExam),
+    x = "transition",
+    y = "Proportion",
+    fill = "From Label"
+  ) + 
+  scale_y_continuous(limits = c(0, 1)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  filename_pdf <- paste0("/bar_label_transition_exam", iExam,".pdf")
+  filename_png <- paste0("/bar_label_transition_exam", iExam,".png")
+ggsave(paste0(file_dir,filename_pdf),height=5, width=6, dpi=300)
+ggsave(paste0(file_dir,filename_png),height=5, width=6, dpi=300)
+}
+```
+```{r}
+label_order <- c("Regulation", "Neither", "Expression")
+
+df_transition_props <- df_transition_props %>%
+  mutate(
+    from = factor(from, levels = label_order),
+    to = factor(to, levels = label_order),
+    transition = paste(from, "→", to)
+  )
+```
+
+### Response: Non-repeat label transition
+```{r}
+df_transitions_by_response <- df_by_phrase_id %>%
+  arrange(ID, exam_num, ResponseNumber, phrase_id) %>%
+  dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  summarise(
+    label_seq = list(rle(label_api_text)$values),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    from = map(label_seq, ~ head(.x, -1)),
+    to = map(label_seq, ~ tail(.x, -1))
+  ) %>%
+  select(exam_num, ResponseNumber, from, to) %>%
+  unnest(c(from, to)) %>%
+  dplyr::mutate(transition = paste(from, "→", to)) %>%
+  dplyr::count(ResponseNumber, transition, name = "count")
+  
+  df_transitions_by_response <- df_transitions_by_response %>%
+    dplyr::group_by(ResponseNumber) %>%
+    dplyr::mutate(prop = count / sum(count)) %>%
+    ungroup()
+  
+  # file_dir <- "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/label_transition/collapsed"
+  # if(!dir.exists(file_dir)){
+  #   dir.create(file_dir, recursive = TRUE)
+  # }
+  # filename_pdf <- paste0("/conf_label_transition_exam", iExam,".pdf")
+  # filename_png <- paste0("/conf_label_transition_exam", iExam,".png")
+  # ggsave(paste0(file_dir,filename_pdf),height=4, width=6, dpi=300)
+  # ggsave(paste0(file_dir,filename_png),height=4, width=6, dpi=300)
+  
+  # label_order <- c("Regulation", "Neither", "Expression")
+
+  ggplot(df_transitions_by_response, aes(x = ResponseNumber, y = prop, color = transition)) +
+  geom_line(size = 1) +
+  geom_point() +
+  labs(
+    title = "Label Transition Counts Across Responses",
+    x = "Response Number",
+    y = "Prop of Transitions",
+    color = "Transition"
+  ) + theme_minimal()
+#   filename_pdf <- paste0("/bar_label_transition_exam", iExam,".pdf")
+#   filename_png <- paste0("/bar_label_transition_exam", iExam,".png")
+# ggsave(paste0(file_dir,filename_pdf),height=5, width=6, dpi=300)
+# ggsave(paste0(file_dir,filename_png),height=5, width=6, dpi=300)
+```
+
+# Analysis
+
+
+## Distribution
+```{r}
+hist(df_by_sub$Regulation, breaks = 30, main = "Distribution of Regulation Phrases", xlab = "Regulation count")
+```
+```{r}
+mean_val <- mean(df_by_sub$Regulation)
+var_val <- var(df_by_sub$Regulation)
+mean_val
+var_val
+```
+## lmer
+###PE_1 vs. reg_ratio
+```{r}
+df_by_exam_select <- df_no_na %>% select (exam_num, ID, text, label_api_text, label_api, word_count)
+
+df_by_exam <- df_by_exam_select %>% dplyr::count(ID, exam_num, label_api_text) %>% pivot_wider(names_from = label_api_text, values_from = n, values_fill = 0)
+
+df_by_exam <- df_by_exam %>% mutate(total = Expression + Neither + Regulation,
+                                  exp_ratio = Expression/total,
+                                  nei_ratio = Neither/total,
+                                  reg_ratio = Regulation/total
+                                              )
+
+df_by_exam_long <- df_by_exam %>%
+  select(ID, exam_num, Expression, exp_ratio, Neither, nei_ratio, Regulation, reg_ratio ) %>%
+  pivot_longer(cols = c(exp_ratio, nei_ratio, reg_ratio),
+               names_to = "label", values_to = "count") %>%
+  dplyr::group_by(ID, exam_num) %>%
+  ungroup()
+```
+
+```{r}
+# The total word count of each label, per exam
+df_by_exam_word_count <- df_select %>% group_by(ID, exam_num, label_api_text) %>% summarise(sum_word_count = sum(word_count), .groups = "drop")
+
+# The wide format
+df_by_exam_word_count_wide <- df_by_exam_word_count %>% group_by(ID, exam_num) %>% pivot_wider(names_from = label_api_text, values_from = sum_word_count)
+
+df_by_exam_word_count_wide <- df_by_exam_word_count_wide %>% mutate(across(where(is.numeric), ~replace(.,is.na(.), 0)))
+
+df_by_exam_word_count_wide <- df_by_exam_word_count_wide %>% group_by(ID, exam_num) %>%
+  mutate(exam_total_word = sum(Expression + Regulation + Neither),
+         exp_word_ratio = Expression/exam_total_word,
+         reg_word_ratio = Regulation/exam_total_word,
+         nei_word_ratio = Neither/exam_total_word)
+```
+```{r}
+df_by_exam_comp <- inner_join(df_by_exam, df_by_exam_word_count_wide, by = c("ID", "exam_num"))
+```
+
+```{r}
+## Combine ema with PE
+df_by_exam_pe <- inner_join(df_by_exam_comp, df_PE, by=c("ID", "exam_num"))
+```
+## Adding sentiment
+```{r}
+df_resp_senti <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/emaData_F24_sentiment_resp_sd_full.csv")
+
+df_resp_senti <- df_resp_senti %>% dplyr::group_by(ID, exam_num) %>% dplyr::mutate(exam_senti = mean(sentiment))
+
+df_exam_senti_select <- df_resp_senti %>% distinct(ID, exam_num, .keep_all = TRUE)
+
+```
+```{r}
+df_by_exam_pe_senti <- inner_join(df_by_exam_pe, df_exam_senti_select, by=c("ID", "exam_num"))
+```
+### PE vs senti
+```{r}
+lmer_PE_1_exam_senti <- lmer(exam_senti ~ PE_1 + (1 | ID), data = df_by_exam_pe_senti)
+summary(lmer_PE_1_exam_senti)
+```
+```{r}
+lmer_PE_2_exam_senti <- lmer(exam_senti ~ PE_2 + (1 | ID), data = df_by_exam_pe_senti)
+summary(lmer_PE_2_exam_senti)
+
+```
+```{r}
+lmer_EVPE_exam_senti <- lmer(exam_senti ~ EVPE + (1 | ID), data = df_by_exam_pe_senti)
+summary(lmer_EVPE_exam_senti)
+```
+```{r}
+r_value  <- lmer_EVPE_exam_senti$estimate
+p_value  <- lmer_EVPE_exam_senti$p.value
+#r2_value <- r_value^2
+```
+
+### Plotting
+```{r}
+EVPE_exam_senti_plot <- ggplot(df_by_exam_pe_senti, aes(x=EVPE, y=exam_senti)) +
+   geom_point(size = 2, alpha = 0.6, color = "skyblue2") +
+  geom_smooth(method = "lm", se = TRUE, color = "skyblue4") +
+  labs(
+    x = "PE",
+    y = "Exam sentiment"
+  ) +
+  theme(axis.text = element_text(size = 16),
+        text = element_text(family = "sans",size = 14)) +
+  theme_classic()
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig0_EVPE_exam_senti.png",EVPE_exam_senti_plot,height=5, width=4, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig0_EVPE_exam_senti.pdf",EVPE_exam_senti_plot,height=5, width=4, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig0_EVPE_exam_senti.eps",EVPE_exam_senti_plot,height=5, width=4, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig0_EVPE_exam_senti.png",EVPE_exam_senti_plot,height=4, width=6, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig0_EVPE_exam_senti.pdf",EVPE_exam_senti_plot,height=4, width=6, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/Fig0_EVPE_exam_senti.eps",EVPE_exam_senti_plot,height=4, width=6, dpi=300)
+EVPE_exam_senti_plot
+```
+
+```{r}
+df_by_exam_pe_senti <- df_by_exam_pe_senti %>%
+  mutate(
+    PE_1_z = scale(PE_1)[,1],
+    PE_2_z = scale(PE_2)[,1],
+    EVPE_z = scale(EVPE)[,1]
+  )
+```
+
+```{r}
+lmer_PE_1_PE_2_EVPE_exam_senti <- lmer(exam_senti ~ PE_1_z + PE_2_z + EVPE_z + (1 | ID), data = df_by_exam_pe_senti)
+summary(lmer_PE_1_PE_2_EVPE_exam_senti)
+```
+```{r}
+fixef(lmer_PE_1_PE_2_EVPE_exam_senti)
+```
+
+```{r}
+reg_senti_model <- lmer(reg_word_ratio ~ exam_senti + (1 | ID)+(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(reg_senti_model)
+```
+```{r}
+PE_1_reg_model <- lmer(reg_word_ratio ~ PE_1 + (1 | ID), data = df_by_exam_pe_senti)
+
+summary(PE_1_reg_model)
+```
+```{r}
+pp_check(PE_1_reg_model)
+```
+```{r}
+PE_1_reg_word <- lmer(reg_word_ratio ~ PE_1 + (1|exam_num) + (1 | ID), data = df_by_exam_pe_senti)
+
+summary(PE_1_reg_word)
+```
+```{r}
+PE_1_reg_word_senti <- lmer(reg_word_ratio ~ PE_1 + exam_senti+ (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE_1_reg_word_senti)
+```
+```{r}
+PE_1_reg_word_senti_inx <- lmer(reg_word_ratio ~ PE_1 * exam_senti+ (1 | ID)+(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE_1_reg_word_senti_inx)
+anova(PE_1_reg_word_senti_inx)
+```
+
+#### PE_1 reg model comparison
+```{r}
+anova(PE_1_reg_word,PE_1_reg_word_senti, PE_1_reg_word_senti_inx)
+AIC(reg_senti_model,PE_1_reg_word,PE_1_reg_word_senti, PE_1_reg_word_senti_inx)
+BIC(reg_senti_model,PE_1_reg_word,PE_1_reg_word_senti, PE_1_reg_word_senti_inx)
+```
+```{r}
+nobs(reg_senti_model )
+nobs(PE_1_reg_word)
+nobs(PE_1_reg_word_senti)
+nobs(PE_1_reg_word_senti_inx)
+```
+
+```{r}
+library(tibble)
+library(dplyr)
+
+model_table <- tribble(
+  ~Outcome, ~Model, ~AIC, ~BIC, ~logLik, ~Delta_AIC,
+  "Expression proportion", "PE_1", -996.7, -969.60, 503.35, 128.3,
+  "Expression proportion", "PE_1 + exam_senti", -1019.5, -986.96, 515.74, 105.5,
+  "Expression proportion", "PE_1 * exam_senti", -1125.0, -1087.07, 569.51, 0.0,
+  "Regulation proportion", "PE_1", -1112.2, -1085.2, 561.13, 140.0,
+  "Regulation proportion", "PE_1 + exam_senti", -1130.2, -1097.6, 571.07, 122.0,
+  "Regulation proportion", "PE_1 * exam_senti", -1252.2, -1214.2, 633.08, 0.0
+) %>%
+  group_by(Outcome) %>%
+  mutate(
+    Delta_AIC = AIC - min(AIC)
+  ) %>%
+  ungroup()
+```
+```{r}
+library(gt)
+
+gt_tbl <- model_table %>%
+  gt(groupname_col = "Outcome") %>%
+  tab_header(
+    title = md("**Table II**"),
+    subtitle = md("Model Comparison of Mixed-Effects Models for PE_1")
+  ) %>%
+  cols_label(
+    Model = "Model predictors",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "logLik",
+    Delta_AIC = md("&Delta;AIC (model − final model)")
+  ) %>%
+  fmt_number(
+    columns = c(AIC, BIC, logLik, Delta_AIC),
+    decimals = 2
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      rows = Delta_AIC == 0
+    )
+  ) %>%
+  tab_options(
+    table.font.names = "Times New Roman"
+  ) %>%
+  tab_source_note(
+    source_note = md("**Note.** Lower AIC/BIC values indicate better model fit. Bolded rows indicate the best-fitting model within each outcome.")
+  )
+```
+```{r}
+gt_tbl
+```
+```{r}
+gtsave(gt_tbl, "PE_1_reg_model_comparison_table_new.pdf")
+```
+
+#### Cor_plot
+```{r}
+## correlation plot
+rvalue=with(df_by_exam_pe, cor.test(PE_1, reg_ratio, use = "complete.obs"))
+rhovalue=with(df_by_exam_pe, cor.test(PE_1, reg_ratio, use = "complete.obs", method="spearman",exact=FALSE ))
+
+ggplot(df_by_exam_pe, aes(x=PE_1, y=reg_ratio)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  annotate("text", size= 4, x=Inf, y = Inf, label =paste("r = ", round(as.numeric(rvalue[4]), digits=2), " p = ", round(as.numeric(rvalue[3]), digits=2)," pRho = ", round(as.numeric(rhovalue[3]), digits=2), " n = ", round(as.numeric(rvalue[2])+2, digits=2)),colour = "black",vjust=1.15, hjust=1.1)+
+  labs(
+    title = "PE_1 vs. Regulation ratio",
+    x = "Prediction error before taking exam",
+    y = "Regulation ratio per exam"
+  )
+  theme_classic()
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig6_PE_reg_ratio.png",height=4, width=5, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig6_PE_reg_ratio.pdf",height=4, width=5, dpi=300)
+```
+### PE_1_val vs. reg_ratio
+```{r}
+PE_1_val_reg_model <- lmer(reg_ratio ~ PE_1_val + (1 | ID), data = df_by_exam_pe)
+
+summary(PE_1_val_reg_model)
+```
+```{r}
+plot_model(PE_1_val_reg_model)
+```
+
+```{r}
+pp_check(PE_1_val_reg_model)
+```
+
+```{r}
+PE_1_mag_reg_model <- lmer(reg_ratio ~ PE_1_mag + (1 | ID), data = df_by_exam_pe)
+
+summary(PE_1_mag_reg_model)
+```
+```{r}
+PE_1_val_mag_reg_model <- lmer(reg_ratio ~ PE_1_mag + PE_1_val + PE_1_mag*PE_1_val +0+ (1 | ID), data = df_by_exam_pe)
+
+summary(PE_1_val_mag_reg_model)
+```
+### PE_1 vs. exp_ratio
+```{r}
+PE_1_exp_model <- lmer(exp_ratio ~ PE_1 + (1 | ID), data = df_by_exam_pe)
+
+summary(PE_1_exp_model)
+```
+```{r}
+pp_check(PE_1_exp_model)
+```
+
+```{r}
+PE_1_val_exp_model <- lmer(exp_ratio ~ PE_1_val + (1 | ID), data = df_by_exam_pe)
+
+summary(PE_1_val_exp_model)
+```
+
+```{r}
+PE_1_mag_exp_model <- lmer(exp_ratio ~ PE_1_mag + (1 | ID), data = df_by_exam_pe)
+
+summary(PE_1_mag_exp_model)
+```
+
+```{r}
+PE_1_val_mag_exp_model <- lmer(exp_ratio ~ PE_1_val + PE_1_mag + PE_1_val*PE_1_mag + 0+ (1 | ID), data = df_by_exam_pe)
+
+summary(PE_1_val_mag_exp_model)
+```
+#### PE_1 vs. exp_word_ratio
+```{r}
+PE_1_exp_ratio <- lmer(exp_word_ratio ~ PE_1 + (1|ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE_1_exp_ratio)
+```
+```{r}
+PE_1_exp_ratio_senti <- lmer(exp_word_ratio ~ PE_1 + exam_senti + (1|ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE_1_exp_ratio_senti)
+```
+```{r}
+PE_1_exp_ratio_senti_inx <- lmer(exp_word_ratio ~ PE_1 * exam_senti + (1|ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE_1_exp_ratio_senti_inx)
+```
+#### PE_1 vs. exp model comparison
+```{r}
+anova(PE_1_exp_ratio,PE_1_exp_ratio_senti, PE_1_exp_ratio_senti_inx)
+AIC(PE_1_exp_ratio,PE_1_exp_ratio_senti, PE_1_exp_ratio_senti_inx)
+BIC(PE_1_exp_ratio,PE_1_exp_ratio_senti, PE_1_exp_ratio_senti_inx)
+```
+
+#### Cor_plot
+```{r}
+## correlation plot
+rvalue=with(df_by_exam_pe, cor.test(PE_1, exp_ratio, use = "complete.obs"))
+rhovalue=with(df_by_exam_pe, cor.test(PE_1, exp_ratio, use = "complete.obs", method="spearman",exact=FALSE ))
+ggplot(df_by_exam_pe, aes(x=PE_1, y=exp_ratio)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  annotate("text", size= 4, x=Inf, y = Inf, label =paste("r = ", round(as.numeric(rvalue[4]), digits=2), " p = ", round(as.numeric(rvalue[3]), digits=2)," pRho = ", round(as.numeric(rhovalue[3]), digits=2), " n = ", round(as.numeric(rvalue[2])+2, digits=2)),colour = "black",vjust=1.15, hjust=1.1)+
+  labs(
+    title = "PE_1 vs. Expression ratio",
+    x = "Prediction error before taking exam",
+    y = "Expression ratio per exam"
+  )
+  theme_classic()
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig7_PE_exp_ratio.png",height=4, width=5, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig7_PE_exp_ratio.pdf",height=4, width=5, dpi=300)
+```
+
+### PE2 vs. reg_ratio
+```{r}
+pe2_reg_model <- lmer(reg_word_ratio ~ PE_2 + (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(pe2_reg_model)
+```
+```{r}
+pp_check(pe2_reg_model)
+```
+
+```{r}
+pe2_reg_senti_model <- lmer(reg_word_ratio ~ PE_2 + exam_senti+ (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(pe2_reg_senti_model)
+```
+```{r}
+pe2_reg_senti_model_inx <- lmer(reg_word_ratio ~ PE_2 * exam_senti+ (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(pe2_reg_senti_model_inx)
+```
+#### PE_2 vs reg model comparison
+```{r}
+anova(pe2_reg_model,pe2_reg_senti_model,pe2_reg_senti_model_inx)
+AIC(pe2_reg_model,pe2_reg_senti_model,pe2_reg_senti_model_inx)
+BIC(pe2_reg_model,pe2_reg_senti_model,pe2_reg_senti_model_inx)
+```
+
+```{r}
+## correlation plot
+rvalue=with(df_by_exam_pe, cor.test(PE_2, reg_ratio, use = "complete.obs"))
+rhovalue=with(df_by_exam_pe, cor.test(PE_2, reg_ratio, use = "complete.obs", method="spearman",exact=FALSE ))
+ggplot(df_by_exam_pe, aes(x=PE_2, y=reg_ratio)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  annotate("text", size= 4, x=Inf, y = Inf, label =paste("r = ", round(as.numeric(rvalue[4]), digits=2), " p = ", round(as.numeric(rvalue[3]), digits=2)," pRho = ", round(as.numeric(rhovalue[3]), digits=2), " n = ", round(as.numeric(rvalue[2])+2, digits=2)),colour = "black",vjust=1.15, hjust=1.1)+
+  labs(
+    title = "PE_2 vs. Regulation ratio",
+    x = "Prediction error after taking exam",
+    y = "Regulation ratio per exam"
+  ) +
+  theme_classic()
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig8_PE2_reg_ratio.png",height=4, width=5, dpi=300)
+  ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig8_PE2_reg_ratio.pdf",height=4, width=5, dpi=300)
+```
+```{r}
+pe2_val_reg_model <- lmer(reg_ratio ~ PE_2_val + (1 | ID), data = df_by_exam_pe)
+
+summary(pe2_val_reg_model)
+```
+```{r}
+pe2_mag_reg_model <- lmer(reg_ratio ~ PE_2_mag + (1 | ID), data = df_by_exam_pe)
+
+summary(pe2_mag_reg_model)
+```
+```{r}
+pe2_val_mag_reg_model <- lmer(reg_ratio ~ PE_2_val*PE_2_mag + (1|exam_num) + (1 | ID), data = df_by_exam_pe)
+
+summary(pe2_val_mag_reg_model)
+```
+```{r}
+pe2_val_mag_reg_model_total <- lmer(reg_ratio ~ PE_2_val*PE_2_mag + total+(1|exam_num) + (1|ID), data = df_by_exam_pe)
+
+summary(pe2_val_mag_reg_model_total)
+```
+```{r}
+plot_model(pe2_val_mag_reg_model_total, type = "int")
+```
+
+### PE2_1 vs. exp_ratio
+```{r}
+pe2_exp_model <- lmer(exp_ratio ~ PE_2 + (1 | ID), data = df_by_exam_pe)
+
+summary(pe2_exp_model)
+```
+```{r}
+pp_check(pe2_exp_model)
+```
+
+### PE_2 vs. exp_word_ratio
+```{r}
+PE2_exp_word_model <- lmer(exp_word_ratio ~ PE_2 + (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE2_exp_word_model)
+```
+```{r}
+pp_check(PE2_exp_word_model)
+```
+```{r}
+PE2_exp_word_senti_model <- lmer(exp_word_ratio ~ PE_2 + exam_senti + (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE2_exp_word_senti_model)
+```
+```{r}
+PE2_exp_word_senti_model_inx <- lmer(exp_word_ratio ~ PE_2 * exam_senti + (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE2_exp_word_senti_model_inx)
+```
+#### PE_2 exp model comparison
+```{r}
+anova(PE2_exp_word_model,PE2_exp_word_senti_model,PE2_exp_word_senti_model_inx)
+AIC(PE2_exp_word_model,PE2_exp_word_senti_model,PE2_exp_word_senti_model_inx)
+BIC(PE2_exp_word_model,PE2_exp_word_senti_model,PE2_exp_word_senti_model_inx)
+```
+#### PE_2 table
+```{r}
+library(tibble)
+library(dplyr)
+
+pe2_model_table <- tribble(
+  ~Outcome,            ~Model,                   ~AIC,     ~BIC,      ~logLik, ~Chisq,    ~Df, ~p,
+  "Expression proportion",  "PE_2",                   -1015.8,  -988.06,   512.91,  NA,        NA,  NA,
+  "Expression proportion",  "PE_2 + exam_senti",      -1018.8,  -985.44,   515.38,  4.9382,    1,   0.02627,
+  "Expression proportion",  "PE_2 * exam_senti",      -1176.5,  -1137.63,  595.25,  159.7392,  1,   NA,
+
+  "Regulation proportion",  "PE_2",                   -1266.1,  -1238.3,   638.03,  NA,        NA,  NA,
+  "Regulation proportion",  "PE_2 + exam_senti",      -1265.6,  -1232.3,   638.82,  1.5709,    1,   0.2101,
+  "Regulation proportion",  "PE_2 * exam_senti",      -1468.8,  -1429.9,   741.39,  205.1493,  1,   NA
+) %>%
+  group_by(Outcome) %>%
+  mutate(Delta_AIC = AIC - min(AIC)) %>%
+  ungroup() %>%
+  mutate(
+    p_label = case_when(
+      is.na(p) & Model == "PE_2" ~ "—",
+      Model == "PE_2 * exam_senti" ~ "< .001",
+      TRUE ~ sprintf("%.3f", p)
+    ),
+    Chisq_label = ifelse(is.na(Chisq), "—", sprintf("%.2f", Chisq)),
+    Df_label = ifelse(is.na(Df), "—", as.character(Df))
+  )
+```
+```{r}
+library(gt)
+
+pe2_gt_tbl <- pe2_model_table %>%
+  select(Outcome, Model, AIC, BIC, logLik, Delta_AIC, Chisq_label, Df_label, p_label) %>%
+  gt(groupname_col = "Outcome") %>%
+  tab_header(
+    title = md("**Table III**"),
+    subtitle = md("Model Comparison of Mixed-Effects Models for PE_2")
+  ) %>%
+  cols_label(
+    Model = "Model predictors",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "logLik",
+    Delta_AIC = md("&Delta;AIC (model − final model)"),
+    Chisq_label = md("&chi;<sup>2</sup>"),
+    Df_label = "Df",
+    p_label = md("*p*")
+  ) %>%
+  fmt_number(
+    columns = c(AIC, BIC, logLik, Delta_AIC),
+    decimals = 2
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(rows = Delta_AIC == 0)
+  ) %>%
+  tab_options(
+    table.font.size = px(16),
+    heading.title.font.size = px(22),
+    heading.subtitle.font.size = px(18),
+    row_group.font.weight = "bold",
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2),
+    column_labels.border.bottom.width = px(1.5),
+    data_row.padding = px(6),
+    table.font.names = "Times New Roman"
+  ) %>%
+  tab_source_note(
+    source_note = md("*Note.* Lower AIC and BIC values indicate better model fit. Bolded rows indicate the best-fitting model within each outcome.")
+  )
+```
+```{r}
+pe2_gt_tbl
+gtsave(pe2_gt_tbl, "PE2_model_comparison_table_new.pdf")
+```
+
+```{r}
+## correlation plot
+rvalue=with(df_by_exam_pe, cor.test(PE_2, exp_ratio, use = "complete.obs"))
+rhovalue=with(df_by_exam_pe, cor.test(PE_2, exp_ratio, use = "complete.obs", method="spearman",exact=FALSE ))
+ggplot(df_by_exam_pe, aes(x=PE_2, y=exp_ratio)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  annotate("text", size= 4, x=Inf, y = Inf, label =paste("r = ", round(as.numeric(rvalue[4]), digits=2), " p = ", round(as.numeric(rvalue[3]), digits=2)," pRho = ", round(as.numeric(rhovalue[3]), digits=2), " n = ", round(as.numeric(rvalue[2])+2, digits=2)),colour = "black",vjust=1.15, hjust=1.1)+
+  labs(
+      title = "PE_2 vs. Expression ratio",
+      x = "Prediction error after taking exam",
+      y = "Expression ratio per exam"
+    )+
+    theme_classic()
+    ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig9_PE2_exp_ratio.png",height=4, width=5, dpi=300)
+    ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Fig9_PE2_exp_ratio.pdf",height=4, width=5, dpi=300)
+```
+```{r}
+pe2_val_exp_model <- lmer(exp_ratio ~ PE_2_val + (1 | ID), data = df_by_exam_pe)
+
+summary(pe2_val_exp_model)
+```
+```{r}
+pp_check(pe2_val_exp_model)
+```
+```{r}
+pe2_mag_exp_model <- lmer(exp_ratio ~ PE_2_mag + (1 | ID), data = df_by_exam_pe)
+
+summary(pe2_mag_exp_model)
+```
+```{r}
+pe2_val_mag_exp_model <- lmer(exp_ratio ~ PE_2_val * PE_2_mag + (1 | ID), data = df_by_exam_pe)
+
+summary(pe2_val_mag_exp_model)
+```
+
+#### Final: EVPE vs. reg_ratio
+```{r}
+EVPE_reg_model <- lmer(reg_ratio ~ EVPE + (1 | ID), data = df_by_exam_pe)
+
+summary(EVPE_reg_model)
+```
+```{r}
+pp_check(EVPE_reg_model)
+```
+```{r}
+EVPE_reg_word_model <- lmer(reg_word_ratio ~ EVPE + (1 | ID), data = df_by_exam_pe)
+
+summary(EVPE_reg_word_model)
+```
+
+```{r}
+library(ggeffects)
+library(ggplot2)
+
+EVPE_reg_plot <- ggpredict(
+  EVPE_reg_model,
+  terms = "EVPE"
+)
+
+EVPE_reg_plot_df <- as.data.frame(EVPE_reg_plot)
+```
+```{r}
+ggplot() +
+  # Original data
+  geom_point(
+    data = df_by_exam_pe,
+    aes(x = EVPE, y = reg_ratio),
+    alpha = 0.3,
+    color = "lightskyblue1",
+    size = 2
+  ) +
+
+  # 95% CI
+  geom_ribbon(
+    data = EVPE_reg_plot_df,
+    aes(
+      x = x,
+      ymin = conf.low,
+      ymax = conf.high
+    ),
+    fill = "skyblue3",
+    alpha = 0.2
+  ) +
+
+  # Model-estimated line
+  geom_line(
+    data = EVPE_reg_plot_df,
+    aes(x = x, y = predicted),
+    color = "skyblue3",
+    linewidth = 1.2
+  ) +
+
+  coord_cartesian(xlim = c(-40, 40)) +
+
+  labs(
+    x = "Prediction Error",
+    y = "Regulation Proportion"
+  ) +
+
+  theme_classic()
+ggsave("/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/reg_prop_EVPE.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/reg_prop_EVPE.pdf",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/reg_prop_EVPE.eps",height=4, width=6, dpi=300)
+```
+
+
+
+#### EVPE vs reg_word_ratio + exam_senti
+```{r}
+EVPE_reg_word_model <- lmer(reg_word_ratio ~ EVPE + (1 | ID)+(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_reg_word_model)
+```
+
+```{r}
+EVPE_reg_word_model_senti <- lmer(reg_word_ratio ~ EVPE +exam_senti+ (1 | ID)+(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_reg_word_model_senti)
+```
+```{r}
+EVPE_reg_word_model_senti_int <- lmer(reg_word_ratio ~ EVPE *exam_senti+ (1 | ID)+(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_reg_word_model_senti_int)
+```
+
+##### Mediation model
+```{r}
+install.packages("mediation")
+library(mediation)
+```
+```{r}
+library(brms)
+library(dplyr)
+
+df_med <- df_by_exam_pe_senti %>%
+  mutate(
+    subject_id = factor(ID),
+    exam_id = factor(exam_num)
+  ) %>%
+  select(
+    subject_id,
+    exam_id,
+    EVPE,
+    exam_senti,
+    reg_ratio
+  ) %>%
+  filter(
+    complete.cases(
+      EVPE,
+      exam_senti,
+      reg_ratio,
+      subject_id,
+      exam_id
+    )
+  )
+
+str(df_med)
+
+sapply(df_med, class)
+```
+```{r}
+table(df_by_exam_pe_senti$reg_ratio == 0)
+
+table(df_by_exam_pe_senti$reg_ratio == 1)
+```
+```{r}
+
+```
+
+
+```{r}
+
+library(brms)
+
+bf_mediator <- bf(
+  exam_senti ~ 1 + EVPE +
+    (1 | gr(subject_id)) +
+    (1 | gr(exam_id)),
+  family = gaussian()
+)
+
+bf_outcome <- bf(
+  reg_ratio ~ 1 + EVPE + exam_senti +
+    (1 | gr(subject_id)) +
+    (1 | gr(exam_id)),
+  family = gaussian()
+)
+
+med_fit <- brm(
+  bf_mediator +
+    bf_outcome +
+    set_rescor(FALSE),
+  data = df_med,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 2000,
+  control = list(
+    adapt_delta = 0.95,
+    max_treedepth = 12
+  ),
+  seed = 1234
+)
+
+summary(med_fit)
+fixef(med_fit, summary = TRUE)
+```
+```{r}
+library(posterior)
+library(dplyr)
+
+draws <- as_draws_df(med_fit)
+
+draws <- draws %>%
+  mutate(
+    indirect = b_examsenti_EVPE * b_regratio_exam_senti,
+    direct   = b_regratio_EVPE,
+    total    = direct + indirect
+  )
+```
+```{r}
+draws %>%
+  summarise(
+    indirect_est = median(indirect),
+    indirect_l95 = quantile(indirect, .025),
+    indirect_u95 = quantile(indirect, .975),
+    p_positive   = mean(indirect > 0)
+  )
+```
+#####Mediation zero-inflated
+```{r}
+m_reg <- brm(
+  bf(
+    reg_ratio ~ EVPE + exam_senti +
+      (1 | ID) +
+      (1 | exam_num),
+    zoi ~ 1,
+    coi ~ 1,
+    phi ~ 1
+  ),
+  family = zero_one_inflated_beta(),
+  data = df_by_exam_pe_senti,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.99)
+)
+
+summary(m_reg)
+```
+```{r}
+m_med <- brm(
+  exam_senti ~ EVPE +
+    (1 | ID) +
+    (1 | exam_num),
+  data = df_by_exam_pe_senti
+)
+```
+```{r}
+variables(m_reg)
+variables(m_med)
+```
+
+```{r}
+draws_med <- posterior::as_draws_df(m_med)
+draws_reg <- posterior::as_draws_df(m_reg)
+
+indirect <-
+  draws_med$b_EVPE *
+  draws_reg$b_exam_senti
+
+summary(indirect)
+```
+```{r}
+quantile(indirect, c(0.025, 0.5, 0.975))
+
+mean(indirect > 0)
+```
+
+```{r}
+m_gaussian <- brm(
+  reg_ratio ~ EVPE + exam_senti +
+    (1 | ID) +
+    (1 | exam_num),
+  family = gaussian(),
+  data = df_by_exam_pe_senti
+)
+summary(m_gaussian)
+```
+
+```{r}
+m1 <- add_criterion(m_gaussian, "loo")
+m2 <- add_criterion(m_reg, "loo")
+loo_compare(m1, m2)
+```
+
+
+```{r}
+bf_med <- bf(exam_senti ~ EVPE + (1 | ID) + (1 | exam_num))
+
+bf_reg <- bf(
+  reg_ratio ~ EVPE + exam_senti + (1 | ID) + (1 | exam_num),
+  zoi ~ 1,
+  coi ~ 1,
+  phi ~ 1
+)
+
+fit_joint <- brm(
+  bf_med + bf_reg + set_rescor(FALSE),
+  family = list(gaussian(), zero_one_inflated_beta()),
+  data = df_by_exam_pe_senti
+)
+```
+
+### model plotting
+```{r}
+tab_model(EVPE_reg_word_model_senti_int, PE_1_reg_word_senti_inx,pe2_reg_senti_model_inx, dv.labels = "Regulation proportion")
+```
+```{r}
+library(tibble)
+add_stars <- function(p) {
+  case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE ~ ""
+  )
+}
+```
+
+```{r}
+library(tibble)
+library(gt)
+library(webshot2)
+
+df_exp <- tribble(
+  ~Predictor, ~EVPE_est, ~EVPE_ci, ~EVPE_p, ~PE1_est, ~PE1_ci, ~PE1_p, ~PE2_est, ~PE2_ci, ~PE2_p,
+
+  "(Intercept)", 0.457, "[0.422, 0.491]", "<.001***",
+                 0.460, "[0.425, 0.495]", "<.001***",
+                 0.472, "[0.438, 0.506]", "<.001***",
+
+  "PE / EVPE", 0.004, "[0.003, 0.005]", "<.001***",
+               -0.001, "[-0.002, 0.000]", ".112",
+               0.001, "[0.000, 0.002]", ".047*",
+
+  "exam_senti", -0.127, "[-0.157, -0.096]", "<.001***",
+                0.081, "[0.052, 0.110]", "<.001***",
+                0.002, "[-0.026, 0.030]", ".902",
+
+  "Interaction", 0.010, "[0.009, 0.012]", "<.001***",
+                 0.010, "[0.008, 0.012]", "<.001***",
+                 0.013, "[0.011, 0.015]", "<.001***"
+)
+
+gt_exp <- df_exp %>%
+  gt(rowname_col = "Predictor") %>%
+  tab_spanner("EVPE model", columns = c(EVPE_est, EVPE_ci, EVPE_p)) %>%
+  tab_spanner("PE1 model", columns = c(PE1_est, PE1_ci, PE1_p)) %>%
+  tab_spanner("PE2 model", columns = c(PE2_est, PE2_ci, PE2_p)) %>%
+  cols_label(
+    EVPE_est = "Estimate",
+    EVPE_ci  = "95% CI",
+    EVPE_p   = md("*p*"),
+    PE1_est  = "Estimate",
+    PE1_ci   = "95% CI",
+    PE1_p    = md("*p*"),
+    PE2_est  = "Estimate",
+    PE2_ci   = "95% CI",
+    PE2_p    = md("*p*")
+  ) %>%
+  fmt_number(columns = c(EVPE_est, PE1_est, PE2_est), decimals = 3) %>%
+  cols_align("center", everything()) %>%
+  tab_options(
+    table.font.names = c("Times New Roman", "Times", "serif"),
+    table.border.top.width = px(1.5),
+    table.border.bottom.width = px(1.5)
+  ) %>%
+  tab_header(
+    title = "Table VI. Effects of Prediction Error and Exam Sentiment on Expression Proportion"
+  ) %>%
+  tab_source_note(
+    source_note = md("*Note.* *p* < .05 *, *p* < .01 **, *p* < .001 ***")
+  )
+
+gtsave(
+  gt_exp,
+  "expression_proportion_new.pdf",
+  vwidth = 1500,
+  vheight = 650,
+  zoom = 2
+)
+```
+```{r}
+gt_exp
+```
+
+```{r}
+library(tibble)
+library(gt)
+library(webshot2)
+
+df_reg <- tribble(
+  ~Predictor, ~EVPE_est, ~EVPE_ci, ~EVPE_p, ~PE1_est, ~PE1_ci, ~PE1_p, ~PE2_est, ~PE2_ci, ~PE2_p,
+
+  "(Intercept)", 0.324, "[0.286, 0.362]", "<.001***",
+                 0.311, "[0.276, 0.346]", "<.001***",
+                 0.308, "[0.272, 0.344]", "<.001***",
+
+  "PE / EVPE", -0.004, "[-0.005, -0.003]", "<.001***",
+               0.001, "[-0.000, 0.002]", ".097",
+               -0.001, "[-0.002, -0.000]", ".023*",
+
+  "exam_senti", 0.144, "[0.116, 0.172]", "<.001***",
+                -0.071, "[-0.099, -0.043]", "<.001***",
+                0.015, "[-0.011, 0.041]", ".259",
+
+  "Interaction", -0.011, "[-0.012, -0.010]", "<.001***",
+                 -0.011, "[-0.013, -0.009]", "<.001***",
+                 -0.013, "[-0.015, -0.012]", "<.001***"
+)
+
+gt_reg <- df_reg %>%
+  gt(rowname_col = "Predictor") %>%
+  tab_spanner(label = "EVPE model", columns = c(EVPE_est, EVPE_ci, EVPE_p)) %>%
+  tab_spanner(label = "PE1 model", columns = c(PE1_est, PE1_ci, PE1_p)) %>%
+  tab_spanner(label = "PE2 model", columns = c(PE2_est, PE2_ci, PE2_p)) %>%
+  cols_label(
+    EVPE_est = "Estimate",
+    EVPE_ci  = "95% CI",
+    EVPE_p   = md("*p*"),
+    PE1_est  = "Estimate",
+    PE1_ci   = "95% CI",
+    PE1_p    = md("*p*"),
+    PE2_est  = "Estimate",
+    PE2_ci   = "95% CI",
+    PE2_p    = md("*p*")
+  ) %>%
+  fmt_number(columns = c(EVPE_est, PE1_est, PE2_est), decimals = 3) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  tab_options(
+    table.font.names = c("Times New Roman", "Times", "serif"),
+    table.border.top.width = px(1.5),
+    table.border.bottom.width = px(1.5)
+  ) %>%
+  tab_header(
+    title = "Table V. Effects of Prediction Error and Exam Sentiment on Regulation Proportion"
+  ) %>%
+  tab_source_note(
+    source_note = md("*Note.* *p* < .05 *, *p* < .01 **, *p* < .001 ***")
+  )
+
+gtsave(
+  gt_reg,
+  "regulation_proportion_new.pdf",
+  vwidth = 1500,
+  vheight = 650,
+  zoom = 2
+)
+```
+```{r}
+gt_reg
+```
+
+
+```{r}
+library(gt)
+
+gt_table <- df %>%
+  gt(rowname_col = "Predictor") %>%
+
+  # Column groups
+  tab_spanner("EVPE model", columns = c(EVPE_est, EVPE_ci, EVPE_p)) %>%
+  tab_spanner("PE1 model", columns = c(PE1_est, PE1_ci, PE1_p)) %>%
+  tab_spanner("PE2 model", columns = c(PE2_est, PE2_ci, PE2_p)) %>%
+
+  # Column labels
+  cols_label(
+    EVPE_est = "Estimate", EVPE_ci = "CI", EVPE_p = "p",
+    PE1_est = "Estimate", PE1_ci = "CI", PE1_p = "p",
+    PE2_est = "Estimate", PE2_ci = "CI", PE2_p = "p"
+  ) %>%
+
+  # Format numbers
+  fmt_number(columns = c(EVPE_est, PE1_est, PE2_est), decimals = 3) %>%
+
+  cols_align("center", everything()) %>%
+
+  # 👇 KEY: Times New Roman
+  tab_options(
+    table.font.names = c("Times New Roman", "Times", "serif"),
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2)
+  ) %>%
+
+  tab_header(
+    title = "Effects of Prediction Error and Exam Sentiment on Language Use"
+  )
+```
+```{r}
+library(gt)
+library(webshot2)
+
+gt_table <- df %>%
+  gt(rowname_col = "Predictor") %>%
+  tab_spanner("EVPE model", columns = c(EVPE_est, EVPE_ci, EVPE_p)) %>%
+  tab_spanner("PE1 model", columns = c(PE1_est, PE1_ci, PE1_p)) %>%
+  tab_spanner("PE2 model", columns = c(PE2_est, PE2_ci, PE2_p)) %>%
+  cols_label(
+    EVPE_est = "Estimate", EVPE_ci = "CI", EVPE_p = "p",
+    PE1_est = "Estimate", PE1_ci = "CI", PE1_p = "p",
+    PE2_est = "Estimate", PE2_ci = "CI", PE2_p = "p"
+  ) %>%
+  fmt_number(columns = c(EVPE_est, PE1_est, PE2_est), decimals = 3) %>%
+  cols_align("center", everything()) %>%
+  tab_options(
+    table.font.names = c("Times New Roman", "Times", "serif")
+  )
+
+gtsave(gt_table, "lmer_results_new.pdf", zoom = 2)
+gt_table
+```
+
+```{r}
+tab_model(EVPE_exp_word_senti_model_int, PE_1_exp_ratio_senti_inx,PE2_exp_word_senti_model_inx, dv.labels = "Expression proportion")
+```
+```{r}
+anova(reg_senti_model, EVPE_reg_word_model,EVPE_reg_word_model_senti,EVPE_reg_word_model_senti_int)
+AIC(reg_senti_model,EVPE_reg_word_model,EVPE_reg_word_model_senti,EVPE_reg_word_model_senti_int)
+BIC(reg_senti_model,EVPE_reg_word_model,EVPE_reg_word_model_senti,EVPE_reg_word_model_senti_int)
+```
+```{r}
+library(tibble)
+library(dplyr)
+
+evpe_model_table <- tribble(
+  ~Outcome,            ~Model,                      ~AIC,     ~BIC,      ~logLik, ~Chisq,    ~Df, ~p,
+  "Expression proportion",  "EVPE",                      -1123.6,  -1095.8,   566.81,  NA,        NA,  NA,
+  "Expression proportion",  "EVPE + exam_senti",         -1126.8,  -1093.3,   569.38,  5.1423,    1,   0.02335,
+  "Expression proportion",  "EVPE * exam_senti",         -1321.5,  -1282.5,   667.76,  196.7552,  1,   NA,
+
+  "Regulation proportion",  "EVPE",                      -1369.4,  -1341.6,   689.71,  NA,        NA,  NA,
+  "Regulation proportion",  "EVPE + exam_senti",         -1378.3,  -1344.9,   695.15,  10.8640,   1,   0.0009807,
+  "Regulation proportion",  "EVPE * exam_senti",         -1634.2,  -1595.2,   824.08,  257.8680,  1,   NA
+) %>%
+  group_by(Outcome) %>%
+  mutate(Delta_AIC = AIC - min(AIC)) %>%
+  ungroup() %>%
+  mutate(
+    p_label = case_when(
+      is.na(p) & Model %in% c("EVPE") ~ "—",
+      Model == "EVPE * exam_senti" ~ "< .001",
+      p < .001 ~ "< .001",
+      TRUE ~ sprintf("%.3f", p)
+    ),
+    Chisq_label = ifelse(is.na(Chisq), "—", sprintf("%.2f", Chisq)),
+    Df_label = ifelse(is.na(Df), "—", as.character(Df))
+  )
+```
+```{r}
+library(gt)
+
+evpe_gt_tbl <- evpe_model_table %>%
+  select(Outcome, Model, AIC, BIC, logLik, Delta_AIC, Chisq_label, Df_label, p_label) %>%
+  gt(groupname_col = "Outcome") %>%
+  tab_header(
+    title = md("**Table IV**"),
+    subtitle = md("Model Comparison of Mixed-Effects Models for EVPE")
+  ) %>%
+  cols_label(
+    Model = "Model predictors",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "logLik",
+    Delta_AIC = md("&Delta;AIC (model − final model)"),
+    Chisq_label = md("&chi;<sup>2</sup>"),
+    Df_label = "Df",
+    p_label = md("*p*")
+  ) %>%
+  fmt_number(
+    columns = c(AIC, BIC, logLik, Delta_AIC),
+    decimals = 2
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(rows = Delta_AIC == 0)
+  ) %>%
+  tab_options(
+    table.font.size = px(16),
+    heading.title.font.size = px(22),
+    heading.subtitle.font.size = px(18),
+    row_group.font.weight = "bold",
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2),
+    column_labels.border.bottom.width = px(1.5),
+    data_row.padding = px(6),
+    table.font.names = "Times New Roman"
+  ) %>%
+  tab_source_note(
+    source_note = md("*Note.* Lower AIC and BIC values indicate better model fit. Bolded rows indicate the best-fitting model within each outcome.")
+  )
+
+evpe_gt_tbl
+gtsave(evpe_gt_tbl, "EVPE_model_comparison_table_new.pdf")
+```
+
+```{r}
+library(ggeffects)
+library(ggplot2)
+```
+
+```{r}
+EVPE_reg_word_plot <- ggpredict(EVPE_reg_word_model, terms = "EVPE")
+EVPE_reg_word_plot_df <- as.data.frame(EVPE_reg_word_plot)
+```
+```{r}
+ggplot(EVPE_reg_word_plot_df, aes(x = x, y = predicted)) +
+  geom_line(color = "skyblue2",linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "skyblue2", alpha = 0.2) +
+  labs(
+    title = "Effect of EVPE on regulation ratio within each exam",
+    x = "EVPE",
+    y = "Regulation Word Ratio"
+  ) +
+  theme_classic()
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/EVPE_reg_word_ratio.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/EVPE_reg_word_ratio.pdf",height=4, width=6, dpi=300)
+```
+```{r}
+pred_df <- df_by_exam_pe_senti %>%
+  mutate(pred = predict(EVPE_reg_word_model, re.form = NULL))
+```
+```{r}
+ggplot() +
+  geom_point(
+    data = df_by_exam_pe_senti,
+    aes(x = EVPE, y = reg_word_ratio),
+    alpha = 0.35,
+    color = "lightskyblue1",
+    size = 2
+  ) +
+  geom_line(
+    data = EVPE_reg_word_plot_df,
+    aes(x = x, y = predicted),
+    color = "skyblue3",
+    linewidth = 1.2
+  ) +
+  geom_ribbon(
+    data = EVPE_reg_word_plot_df,
+    aes(x = x, ymin = conf.low, ymax = conf.high),
+    fill = "skyblue3",
+    alpha = 0.2
+  ) +
+  coord_cartesian(xlim = c(-40, 40)) +
+  labs(
+    title = "Effect of PE on Regulation proportion",
+    x = "PE",
+    y = "Regulation proportion"
+  ) +
+  theme_classic()
+# ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Final_EVPE_reg_word_ratio.png",height=4, width=6, dpi=300)
+# ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/Final_EVPE_reg_word_ratio.pdf",height=4, width=6, dpi=300)
+# ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/reg_prop_EVPE.png",height=4, width=6, dpi=300)
+# ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/reg_prop_EVPE.pdf",height=4, width=6, dpi=300)
+# ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/reg_prop_EVPE.eps",height=4, width=6, dpi=300)
+```
+
+```{r}
+EVPE_senti_model <- lmer(exam_senti ~ EVPE + (1 | ID)+(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_senti_model)
+```
+```{r}
+plot_model(model, type = "pred", terms = "Days")
+```
+
+```{r}
+EVPE_reg_word_senti_int_model <- lmer(reg_word_ratio ~ EVPE + exam_senti+EVPE*exam_senti + (1 | ID) +(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_reg_word_senti_int_model)
+```
+```{r}
+pp_check(EVPE_reg_word_senti_int_model)
+```
+```{r}
+plot_model(EVPE_reg_word_senti_int_model, type = "int")
+```
+```{r}
+EVPE_senti_reg_word_int_plot <- ggpredict(EVPE_reg_word_senti_int_model, terms = c("EVPE", "exam_senti [-0.9, 0.9]"))
+EVPE_senti_reg_word_int_plot_df <- as.data.frame(EVPE_senti_reg_word_int_plot)
+```
+```{r}
+ggplot(EVPE_senti_reg_word_int_plot_df, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, color = NA) +
+  labs(
+    title = "Interaction effect of EVPE and exam sentiment on regulation ratio",
+    x = "Prediction error",
+    y = "Regulation proportion",
+    color = "Exam sentiment",
+    fill = "Exam sentiment"
+  ) +
+  scale_color_manual(
+    values = c("-0.9" = "#00BFC4", "0.9" = "#F8766D"),
+    labels = c("-0.9" = "Negative",
+               "0.9"  = "Positive")
+  ) +
+  scale_fill_manual(
+    values = c("-0.9" = "#00BFC4", "0.9" = "#F8766D"),
+    labels = c("-0.9" = "Negative",
+               "0.9"  = "Positive")
+  ) +
+  theme_classic()
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/EVPE_senti_reg_word_ratio_int.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/EVPE_senti_reg_word_ratio_int.pdf",height=4, width=6, dpi=300)
+```
+```{r}
+ggplot(EVPE_senti_reg_word_int_plot_df, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, color = NA) +
+  labs(
+    title = "Interaction effect of EVPE and exam sentiment on regulation ratio",
+    x = "Prediction error",
+    y = "Regulation proportion",
+    color = "Exam sentiment",
+    fill = "Exam sentiment"
+  ) +
+  coord_cartesian(xlim = c(-40, 40)) +
+  scale_color_manual(
+    values = c("-0.9" = "#F8766D", "0.9" = "#00BFC4"),
+    labels = c("-0.9" = "Negative",
+               "0.9"  = "Positive")
+  ) +
+  scale_fill_manual(
+    values = c("-0.9" = "#F8766D", "0.9" = "#00BFC4"),
+    labels = c("-0.9" = "Negative",
+               "0.9"  = "Positive")
+  ) +
+  theme_classic()
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/flip_EVPE_senti_reg_word_ratio_int.png",height=4, width=6, dpi=300)
+ggsave("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/Figure/API_v5_fullset/flip_EVPE_senti_reg_word_ratio_int.pdf",height=4, width=6, dpi=300)
+```
+
+
+```{r}
+m <- EVPE_reg_word_senti_int_model
+
+fixef(m)
+```
+```{r}
+b0 <- fixef(m)[1]
+b1 <- fixef(m)["EVPE"]
+b2 <- fixef(m)["exam_senti"]
+b3 <- fixef(m)["EVPE:exam_senti"]
+```
+```{r}
+s1 <- -0.9
+s2 <- 0.9
+
+intercept1 <- b0 + b2*s1
+slope1 <- b1 + b3*s1
+
+intercept2 <- b0 + b2*s2
+slope2 <- b1 + b3*s2
+```
+```{r}
+# 1. Exact Coordinates
+x_cross <- (intercept2 - intercept1) / (slope1 - slope2)
+y_cross <- slope1 * x_cross + intercept1
+
+# 2. Add the bridge point to the data frame
+plot_df_final <- plot_df %>%
+  bind_rows(
+    # We add the point for both groups to ensure no gaps in any path
+    expand.grid(group = unique(plot_df$group), x = x_cross) %>%
+      mutate(predicted = y_cross, 
+             group_num = as.numeric(as.character(group)),
+             conf.low = y_cross, 
+             conf.high = y_cross)
+  ) %>%
+  arrange(group, x) %>%
+  mutate(congruency = case_when(
+    group_num < 0 & x <= x_cross ~ "Incongruent",
+    group_num < 0 & x >= x_cross ~ "Congruent",
+    group_num > 0 & x <= x_cross ~ "Congruent",
+    group_num > 0 & x >= x_cross ~ "Incongruent"
+  ))
+
+# 3. Plot with the "Weld" point
+ggplot(plot_df_final, aes(x = x, y = predicted)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, group = group),
+              fill = "grey85", alpha = 0.2, color = NA) +
+  
+  # The "Weld": This point fills the pixel gap where colors swap.
+  # 'inherit.aes = FALSE' prevents the "predicted not found" error.
+  geom_point(data = data.frame(x = x_cross, y = y_cross),
+             aes(x = x, y = y), 
+             color = "firebrick3", size = 1.3, 
+             inherit.aes = FALSE) + 
+  geom_point(data = data.frame(x = x_cross, y = y_cross),
+             aes(x = x, y = y), 
+             color = "steelblue3", size = 1.3, 
+             inherit.aes = FALSE) + 
+
+  # The lines: 'lineend = "round"' is the key to a seamless look
+  geom_line(aes(color = congruency, group = interaction(group, congruency)),
+            linewidth = 1.2, lineend = "round") +
+  
+  geom_vline(xintercept = x_cross, linetype = "dashed", color = "grey40") +
+  scale_color_manual(values = c("Congruent" = "steelblue3", "Incongruent" = "firebrick3")) +
+  theme_classic() +
+  labs(title = "Interaction Effect of EVPE and Exam Sentiment",
+       x = "EVPE", y = "Regulation proportion", color = "Congruency")
+```
+
+
+```{r}
+ggplot(plot_df, aes(x = x, y = predicted)) +
+  geom_ribbon(
+    aes(ymin = conf.low, ymax = conf.high, group = group),
+    fill = "grey85",
+    alpha = 0.25,
+    color = NA
+  ) +
+  geom_line(
+    aes(color = congruency, group = segment),
+    linewidth = 1.2
+  ) +
+  geom_vline(xintercept = x_cross, linetype = "dashed", color = "grey40") +
+  scale_color_manual(values = c(
+    "Congruent" = "steelblue3",
+    "Incongruent" = "firebrick3"
+  )) +
+  labs(
+    title = "Interaction Effect of EVPE and Exam Sentiment on Regulation Ratio",
+    x = "EVPE",
+    y = "Regulation proportion",
+    color = "Congruency"
+  ) +
+  theme_classic()
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+plot_df <- EVPE_reg_word_senti_plot_df
+plot_df$group_num <- as.numeric(as.character(plot_df$group))
+
+b <- fixef(EVPE_reg_word_senti_int_model)
+
+b0 <- b["(Intercept)"]
+b1 <- b["EVPE"]
+b2 <- b["exam_senti"]
+b3 <- b["EVPE:exam_senti"]
+
+s1 <- -0.9
+s2 <-  0.9
+
+intercept1 <- b0 + b2 * s1
+slope1     <- b1 + b3 * s1
+
+intercept2 <- b0 + b2 * s2
+slope2     <- b1 + b3 * s2
+
+x_cross <- (intercept2 - intercept1) / (slope1 - slope2)
+
+# 1. Create crossing points for ALL groups in your data
+# We calculate the specific 'predicted' value for each group at the crossing point
+crossing_points <- plot_df %>%
+  distinct(group, group_num) %>%
+  mutate(
+    x = x_cross,
+    predicted = case_when(
+      group_num == s1 ~ slope1 * x_cross + intercept1,
+      group_num == s2 ~ slope2 * x_cross + intercept2,
+      TRUE ~ b0 + b1*x_cross + b2*group_num + b3*x_cross*group_num
+    ),
+    # We leave CI as NA or approximate it to keep the ribbon gap-free
+    conf.low = predicted, 
+    conf.high = predicted
+  )
+
+# 2. Merge, Sort, and Re-label
+plot_df_final <- bind_rows(plot_df, crossing_points) %>%
+  arrange(group, x) %>%
+  mutate(congruency = case_when(
+    group_num < 0 & x <= x_cross ~ "Congruent",
+    group_num > 0 & x >= x_cross ~ "Congruent",
+    TRUE ~ "Incongruent"
+  )) %>%
+  # IMPORTANT: The segment must be unique to the group AND the congruency 
+  # to prevent ggplot from trying to connect the two red lines across the middle.
+  mutate(segment_id = paste0(group, "_", congruency))
+
+# 3. Plot
+ggplot(plot_df_final, aes(x = x, y = predicted)) +
+  geom_ribbon(
+    aes(ymin = conf.low, ymax = conf.high, group = group),
+    fill = "grey85", alpha = 0.25, color = NA
+  ) +
+  geom_line(
+    aes(color = congruency, group = segment_id), # Use the new segment_id
+    linewidth = 1.2,
+    lineend = "round"
+  ) +
+  geom_vline(xintercept = x_cross, linetype = "dashed", color = "grey40") +
+  scale_color_manual(values = c(
+    "Congruent" = "steelblue3",
+    "Incongruent" = "firebrick3"
+  )) +
+  labs(
+    title = "Interaction Effect of EVPE and Exam Sentiment on Regulation Ratio",
+    x = "EVPE", y = "Regulation proportion", color = "Congruency"
+  ) +
+  theme_classic()
+```
+
+
+```{r}
+glmer_EVPE_senti_reg_word_nb <- glmer.nb(reg_word_ratio ~ EVPE*exam_senti +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_pe_senti)
+summary(glmer_EVPE_senti_reg_word_nb)
+```
+```{r}
+pp_check(glmer_EVPE_senti_reg_word_nb)
+```
+
+```{r}
+PE_2_reg_word_senti_model <- lmer(reg_word_ratio ~ PE_2 + exam_senti+PE_2*exam_senti + (1 | ID) +(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(PE_2_reg_word_senti_model)
+```
+```{r}
+plot_model(PE_2_reg_word_senti_model, type = "int")
+```
+
+```{r}
+EVPE_val_reg_model <- lmer(reg_ratio ~ EVPE_val + (1 | ID), data = df_by_exam_pe)
+
+summary(EVPE_val_reg_model)
+```
+```{r}
+EVPE_mag_reg_model <- lmer(reg_ratio ~ EVPE_mag + 0+ (1 | ID), data = df_by_exam_pe)
+
+summary(EVPE_mag_reg_model)
+```
+```{r}
+EVPE_val_mag_reg_model <- lmer(reg_ratio ~ EVPE_val + EVPE_mag +EVPE_val*EVPE_mag + 0+ (1 | ID), data = df_by_exam_pe)
+
+summary(EVPE_val_mag_reg_model)
+```
+```{r}
+plot_model(EVPE_val_mag_reg_model)
+```
+```{r}
+pp_check(EVPE_val_mag_reg_model)
+```
+
+
+```{r}
+EVPE_val_mag_reg_model_total <- lmer(reg_ratio ~ EVPE_val + EVPE_mag +EVPE_val*EVPE_mag +total+ (1 | ID) + (1|exam_num), data = df_by_exam_pe)
+
+summary(EVPE_val_mag_reg_model_total)
+```
+```{r}
+pp_check(EVPE_val_mag_reg_model_total)
+```
+```{r}
+plot_model(EVPE_val_mag_reg_model_total, type="int")
+```
+
+```{r}
+describe(df_by_exam_pe$reg_ratio)
+```
+
+
+### EVPE vs. exp_ratio
+```{r}
+EVPE_exp_word_model <- lmer(exp_word_ratio ~ EVPE + (1 | ID) + (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_exp_word_model)
+```
+
+```{r}
+EVPE_exp_word_senti_model <- lmer(exp_word_ratio ~ EVPE + exam_senti + (1 | ID)+ (1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_exp_word_senti_model)
+```
+
+```{r}
+EVPE_exp_word_senti_model_int <- lmer(exp_word_ratio ~ EVPE * exam_senti + (1 | ID) +(1|exam_num), data = df_by_exam_pe_senti)
+
+summary(EVPE_exp_word_senti_model_int)
+```
+
+```{r}
+EVPE_val_mag_exp_model <- lmer(exp_ratio ~ EVPE_val + EVPE_mag + EVPE_val*EVPE_mag + 0 + (1 | ID), data = df_by_exam_pe)
+
+summary(EVPE_val_mag_exp_model)
+```
+
+##exam_level: exp~ GAD
+```{r}
+GAD_exp_model <- lmer(exp_ratio ~ GAD + (1 | ID), data = df_by_exam_pe)
+
+summary(GAD_exp_model)
+```
+```{r}
+GAD_EVPE_exp_model <- lmer(exp_ratio ~ GAD * EVPE + (1 | ID), data = df_by_exam_pe)
+
+summary(GAD_exp_model)
+```
+```{r}
+df_by_exam_pe_mood <- inner_join(df_by_exam_pe, df_mood, by = "ID")
+```
+```{r}
+GAD_score_exp_model <- lmer(exp_ratio ~ GAD_score * EVPE + (1 | ID) + (1|exam_num), data = df_by_exam_pe_mood)
+
+summary(GAD_score_exp_model)
+```
+
+## Response level: exp_ratio ~ GAD
+```{r}
+GAD_exp_resp_model <- lmer(exp_word_ratio ~ GAD*EVPE  + (1 | ID) + (1|exam_num), data = df_by_resp_word_count_wide_PE)
+
+summary(GAD_exp_resp_model)
+```
+```{r}
+df_by_resp_word_count_wide_PE_mood <- inner_join(df_by_resp_word_count_wide_PE, df_mood, by = c("ID"))
+```
+
+```{r}
+GAD_score_exp_resp_model <- lmer(exp_word_ratio ~ GAD_score*EVPE  + (1 | ID) + (1|exam_num), data = df_by_resp_word_count_wide_PE_mood)
+
+summary(GAD_score_exp_resp_model)
+```
+
+
+####EVPE exp comparison
+```{r}
+anova(EVPE_exp_word_model,EVPE_exp_word_senti_model,EVPE_exp_word_senti_model_int)
+AIC(EVPE_exp_word_model,EVPE_exp_word_senti_model,EVPE_exp_word_senti_model_int)
+BIC(EVPE_exp_word_model,EVPE_exp_word_senti_model,EVPE_exp_word_senti_model_int)
+```
+
+### PE+exam_num vs. reg_ratio
+```{r}
+pe_exam_reg_model <- lmer(reg_ratio ~ PE_1 + exam_num + (1 | ID), data = df_by_exam_pe)
+
+summary(pe_exam_reg_model)
+```
+
+
+# Brm()
+### PE_1 vs. regulation_count (poisson)
+```{r}
+fit1_baye <- brm(Regulation ~ PE_1 + exam_num + (1|ID), data = df_by_exam_pe, family = poisson())
+
+summary(fit1_baye)
+```
+
+```{r}
+df_tmp <- df_by_exam_pe %>% filter(!is.na(PE_1))
+```
+
+### PE_1 + exam_num vs. regulation_count (negbin)
+```{r}
+fit1_baye_neg <- brm(Regulation ~ PE_1 + exam_num + (1|ID), data = df_by_exam_pe %>% filter(!is.na(PE_1)), family = negbinomial())
+
+summary(fit1_baye_neg)
+```
+```{r}
+plot(fit1_baye_neg)
+```
+
+### PE_1 + exam_num vs. regulation_count (zero_inflated)
+```{r}
+fit1_baye_zib <- brm(reg_ratio ~ PE_1 + exam_num + (1|ID), data = df_by_exam_pe, family = zero_one_inflated_beta())
+
+summary(fit1_baye_zib)
+```
+
+### Compare poisson and nb
+```{r}
+loo(fit1_baye, fit1_baye_neg)
+```
+
+## PE_1 vs. expression_count
+```{r}
+fit2_baye <- brm(Expression ~ PE_1 + exam_num + (1|ID), data = df_by_exam_pe, family = poisson())
+
+summary(fit2_baye)
+```
+
+# Temporal model
+## Reg onset and PE
+```{r}
+# Use the reg position within a response as the onset indicate
+df_row_idx <- df_no_na %>% group_by(ID, exam_num, ResponseNumber) %>% dplyr::mutate(phrase_idx =row_number()) %>% ungroup()
+```
+```{r}
+# Find the first phrase_idx with regulation
+first_reg_position <- df_row_idx %>% group_by(ID, exam_num) %>% summarise(first_reg = min(phrase_idx[label_api_text == "Regulation"], na.rm = TRUE),
+total_phrases = n(),
+.groups = "drop") %>% mutate(first_reg_norm = first_reg/total_phrases)
+```
+```{r}
+# If no reg, first_reg = inf. Replace inf with NA
+first_reg_position <- first_reg_position %>%
+  mutate(first_reg = ifelse(is.infinite(first_reg), NA, first_reg),
+         first_reg_norm = first_reg / total_phrases)
+
+```
+
+```{r}
+# Combine transcription with PE
+df_first_reg_PE <- first_reg_position %>%
+  left_join(df_PE, by = c("ID","exam_num"))
+```
+
+```{r}
+fit_reg_pos_PE1 <- lmer(first_reg_norm ~ PE_1 + exam_num + (1 | ID), data = df_first_reg_PE)
+summary(fit_reg_pos_PE1)
+```
+```{r}
+fit_reg_pos_PE_nb <- glmer.nb(first_reg_norm ~ PE_1 + exam_num + (1 | ID), data = df_first_reg_PE)
+summary(fit_reg_pos_PE_nb)
+```
+
+```{r}
+pp_check(fit_reg_pos_PE_nb)
+```
+```{r}
+fit_reg_pos_PE2 <- lmer(first_reg_norm ~ PE_2 + exam_num + (1 | ID), data = df_first_reg_PE)
+summary(fit_reg_pos_PE2)
+```
+
+```{r}
+if (require("ggplot2") && require("see")) {
+  pp_check(fit1_baye_zib)
+}
+```
+```{r}
+pp_check(fit1_baye_neg)
+```
+```{r}
+pp_check(fit_reg_pos_PE)
+```
+
+##PE vs. exam word count
+```{r}
+# The total word count of each label, per exam
+df_by_exam_word_count <- df_select %>% group_by(ID, exam_num, label_api_text) %>% summarise(sum_word_count = sum(word_count), .groups = "drop")
+
+# The wide format
+df_by_exam_word_count_wide <- df_by_exam_word_count %>% group_by(ID, exam_num) %>% pivot_wider(names_from = label_api_text, values_from = sum_word_count)
+
+df_by_exam_word_count_wide <- df_by_exam_word_count_wide %>% mutate(across(where(is.numeric), ~replace(.,is.na(.), 0)))
+
+df_by_exam_word_count_wide <- df_by_exam_word_count_wide %>% group_by(ID, exam_num) %>%
+  mutate(exam_total_word = sum(Expression + Regulation + Neither),
+         exp_word_ratio = Expression/exam_total_word,
+         reg_word_ratio = Regulation/exam_total_word,
+         nei_word_ratio = Neither/exam_total_word)
+```
+```{r}
+df_by_exam_word_count_PE <- inner_join(df_by_exam_word_count, df_PE_correct, by=c("ID", "exam_num"))
+df_by_exam_word_count_wide_PE <- inner_join(df_by_exam_word_count_wide, df_PE, by = c("ID", "exam_num"))
+```
+### PE_1 vs. reg_word_ratio
+####lmer
+```{r}
+# Using word_ratio
+m1_PE1_reg_word_ratio <- lmer(reg_word_ratio ~ PE_1 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_reg_word_ratio)
+```
+```{r}
+pp_check(m1_PE1_reg_word_ratio)
+```
+```{r}
+plot_model(m1_PE1_reg_word_ratio)
+```
+
+```{r}
+m1_PE1_reg_word <- lmer(Regulation ~ PE_1 + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_reg_word)
+```
+```{r}
+pp_check(m1_PE1_reg_word)
+```
+####glmer.nb
+```{r}
+m1_PE1_reg_word_nb <- glmer.nb(Regulation ~ PE_1 + (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_reg_word_nb)
+```
+```{r}
+pp_check(m1_PE1_reg_word_nb)
+```
+###PE_1_val vs. reg_word_ratio
+####lmer
+```{r}
+m1_PE1_val_reg_word_ratio <- lmer(reg_word_ratio ~ PE_1_val +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_val_reg_word_ratio)
+```
+```{r}
+emmeans(m1_PE1_val_reg_word_ratio, pairwise~PE_1_val, adjust = "none")
+```
+
+```{r}
+m1_PE1_val_reg_word <- lmer(Regulation ~ PE_1_val + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_val_reg_word)
+```
+```{r}
+pp_check(m1_PE1_val_reg_word)
+```
+```{r}
+plot_model(m1_PE1_val_reg_word, title = "PE_1_valence vs. Regulation ratio")
+```
+
+####glmer.nb
+```{r}
+m1_PE1_val_reg_word_nb <- glmer.nb(Regulation ~ PE_1_val + 0+ (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_val_reg_word_nb)
+```
+```{r}
+pp_check(m1_PE1_val_reg_word_nb)
+```
+####zero-inflated
+```{r}
+m2_ZINB <- glmmTMB(Regulation ~ PE_1_val + (1|ID),
+                  ziformula = ~1,
+                  offset = log(exam_total_word),
+                  data = df_by_exam_word_count_wide_PE,
+                  family = nbinom2)
+
+# To see the model summary
+summary(m2_ZINB)
+```
+```{r}
+install.packages("DHARMa")
+library(DHARMa)
+
+simulationOutput <- simulateResiduals(m2_ZINB)
+
+# Plot the PPC
+plot(simulationOutput)
+```
+
+### PE_1_mag vs. reg_word_ratio
+####lmer
+```{r}
+# Using word_ratio
+m1_PE1_mag_reg_word_ratio <- lmer(reg_word_ratio ~ PE_1_mag +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_mag_reg_word_ratio)
+```
+```{r}
+pp_check(m1_PE1_mag_reg_word_ratio)
+```
+```{r}
+m1_PE1_mag_reg_word <- lmer(Regulation ~ PE_1_mag + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_mag_reg_word)
+```
+```{r}
+pp_check(m1_PE1_mag_reg_word)
+```
+####glmer.nb
+```{r}
+m1_PE1_mag_reg_word_nb <- glmer.nb(Regulation ~ PE_1_mag +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_mag_reg_word_nb)
+```
+```{r}
+pp_check(m1_PE1_mag_reg_word_nb)
+```
+
+###PE_1_val * PE_1_mag
+####lmer
+```{r}
+m1_PE1_val_mag_reg_word <- lmer(Regulation ~ PE_1_val + PE_1_mag +PE_1_val*PE_1_mag + 0 + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_val_mag_reg_word)
+```
+```{r}
+pp_check(m1_PE1_val_mag_reg_word)
+```
+####glmer.nb
+```{r}
+m1_PE1_val_mag_reg_word_nb <- glmer.nb(Regulation ~ PE_1_val + PE_1_mag +PE_1_val*PE_1_mag + exam_total_word + 0 + (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m1_PE1_val_mag_reg_word_nb)
+```
+```{r}
+pp_check(m1_PE1_val_mag_reg_word_nb)
+```
+### PE_1 vs. exp_word_ratio
+####lmer
+```{r}
+# Using word_ratio
+m2_PE1_exp_word_ratio <- lmer(exp_word_ratio ~ PE_1 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_exp_word_ratio)
+```
+
+```{r}
+pp_check(m2_PE1_exp_word_ratio)
+```
+
+```{r}
+m2_PE1_exp_word <- lmer(Expression ~ PE_1 + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_exp_word)
+```
+
+```{r}
+pp_check(m2_PE1_exp_word)
+```
+####glmer.nb
+```{r}
+m2_PE1_exp_word_nb <- glmer.nb(Expression ~ PE_1 +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_exp_word_nb)
+```
+
+```{r}
+pp_check(m2_PE1_exp_word_nb)
+```
+
+### PE_1_val vs. exp_word_ratio
+```{r}
+m2_PE1_val_exp_word_ratio <- lmer(exp_word_ratio ~ PE_1_val +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_val_exp_word_ratio)
+```
+```{r}
+emmeans(m2_PE1_val_exp_word_ratio, pairwise~PE_1_val, adjust = "none")
+```
+
+```{r}
+m2_PE1_val_exp_word <- lmer(Expression ~ PE_1_val + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_val_exp_word)
+```
+```{r}
+pp_check(m2_PE1_val_exp_word)
+```
+```{r}
+m2_PE1_val_exp_word_nb <- glmer.nb(Expression ~ PE_1_val + 0+ (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_val_exp_word_nb)
+```
+```{r}
+pp_check(m2_PE1_val_exp_word_nb)
+```
+####zero-inflated
+```{r}
+m2_ZINB <- glmmTMB(Expression ~ PE_1_val + (1|ID),
+                  ziformula = ~1,
+                  offset = log(exam_total_word),
+                  data = df_by_exam_word_count_wide_PE,
+                  family = nbinom2)
+
+# To see the model summary
+summary(m2_ZINB)
+```
+```{r}
+# install.packages("DHARMa")
+# library(DHARMa)
+
+simulationOutput <- simulateResiduals(m2_ZINB)
+
+# Plot the PPC
+plot(simulationOutput)
+```
+### PE_1_mag
+```{r}
+m2_PE1_mag_exp_word_ratio <- lmer(exp_word_ratio ~ PE_1_mag +  + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_mag_exp_word_ratio)
+```
+
+```{r}
+m2_PE1_mag_exp_word <- lmer(Expression ~ PE_1_mag + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_mag_exp_word)
+```
+```{r}
+m2_PE1_mag_exp_word_nb <- glmer.nb(Expression ~ PE_1_mag +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_mag_exp_word_nb)
+```
+
+
+### PE_1_val * PE_1_mag
+```{r}
+m2_PE1_val_mag_exp <- lmer(exp_word_ratio ~ PE_1_val*PE_1_mag  + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_val_mag_exp)
+```
+
+```{r}
+m2_PE1_val_mag_exp_word <- lmer(Expression ~ PE_1_val*PE_1_mag + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE1_val_mag_exp_word)
+```
+```{r}
+m2_PE_1_val_mag_exp_word_nb <- glmer.nb(Expression ~ PE_1_val * PE_1_mag + 0 +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m2_PE_1_val_mag_exp_word_nb)
+```
+### PE_2 vs. reg_word_ratio
+####lmer
+```{r}
+# Using word_ratio
+m3_PE2_reg_word_ratio <- lmer(reg_word_ratio ~ PE_2 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_reg_word_ratio)
+
+```
+
+```{r}
+pp_check(m3_PE2_reg_word_ratio)
+```
+
+```{r}
+m3_PE2_reg_word <- lmer(Regulation ~ PE_2 + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_reg_word)
+
+```
+
+```{r}
+pp_check(m3_PE2_reg_word)
+```
+####glmer.nb
+```{r}
+m3_PE2_reg_word_nb <- glmer.nb(Regulation ~ PE_2 +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_reg_word_nb)
+```
+```{r}
+pp_check(m3_PE2_reg_word_nb)
+```
+### PE_2_val vs. reg_word_ratio
+####lmer
+```{r}
+m3_PE2_val_reg_word_ratio <- lmer(reg_word_ratio ~ PE_2_val +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_reg_word_ratio)
+```
+```{r}
+emmeans(m3_PE2_val_reg_word_ratio, pairwise~PE_2_val, adjust = "none")
+```
+
+```{r}
+df_by_exam_word_count_wide_PE$PE_2_val <- relevel(df_by_exam_word_count_wide_PE$PE_2_val, ref = "negative")
+```
+
+```{r}
+m3_PE2_val_reg_word <- lmer(Regulation ~ PE_2_val + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_reg_word)
+```
+```{r}
+pp_check(m3_PE2_val_reg_word)
+```
+```{r}
+plot_model(m3_PE2_val_reg_word, title = "PE_2_valence vs. Regulation ratio")
+```
+####glmer.nb
+```{r}
+m3_PE2_val_reg_word_nb <- glmer.nb(Regulation ~ PE_2_val + 0+ (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_reg_word_nb)
+```
+```{r}
+pp_check(m3_PE2_val_reg_word_nb)
+```
+####zero-inflated
+```{r}
+m3_ZINB <- glmmTMB(Regulation ~ PE_2_val + (1|ID),
+                  ziformula = ~1,
+                  offset = log(exam_total_word),
+                  data = df_by_exam_word_count_wide_PE,
+                  family = nbinom3)
+
+# To see the model summary
+summary(m3_ZINB)
+```
+```{r}
+install.packages("DHARMa")
+library(DHARMa)
+
+simulationOutput <- simulateResiduals(m3_ZINB)
+
+# Plot the PPC
+plot(simulationOutput)
+```
+###PE_2_mag vs. reg_word_ratio
+####lmer
+```{r}
+m3_PE2_mag_reg_word_ratio <- lmer(reg_word_ratio ~ PE_2_mag +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_mag_reg_word_ratio)
+```
+```{r}
+pp_check(m3_PE2_mag_reg_word_ratio)
+```
+
+```{r}
+m3_PE2_mag_reg_word <- lmer(Regulation ~ PE_2_mag + exam_total_word  + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_mag_reg_word)
+```
+```{r}
+pp_check(m3_PE2_mag_reg_word)
+```
+####glmer.nb
+```{r}
+m3_PE2_mag_reg_word_nb <- glmer.nb(Regulation ~ PE_2_mag + (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_mag_reg_word_nb)
+```
+```{r}
+pp_check(m3_PE2_mag_reg_word_nb)
+```
+####zero-inflated
+```{r}
+m3_ZINB <- glmmTMB(Regulation ~ PE_2_mag + (1|ID),
+                  ziformula = ~1,
+                  offset = log(exam_total_word),
+                  data = df_by_exam_word_count_wide_PE,
+                  family = nbinom3)
+
+# To see the model summary
+summary(m3_ZINB)
+```
+```{r}
+install.packages("DHARMa")
+library(DHARMa)
+
+simulationOutput <- simulateResiduals(m3_ZINB)
+
+# Plot the PPC
+plot(simulationOutput)
+```
+
+###PE_2_val*PE_2_mag
+####lmer
+```{r}
+m3_PE2_val_mag_reg_word_ratio <- lmer(reg_word_ratio ~ PE_2_val + PE_2_mag + PE_2_val*PE_2_mag +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_reg_word_ratio)
+```
+```{r}
+m3_PE2_val_reg_word <- lmer(Regulation ~ PE_2_val*PE_2_mag + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_reg_word)
+```
+```{r}
+pp_check(m3_PE2_val_reg_word)
+```
+```{r}
+plot_model(m3_PE2_val_reg_word, type = "int")
+```
+
+m1<-brms(Regulation ~ t2(PE_2_mag, by = PE_2_val)...)
+conditional_effects(m1)
+
+####glmer.nb
+```{r}
+m3_PE2_val_mag_reg_word_nb <- glmer.nb(Regulation ~ PE_2_val + PE_2_mag + PE_2_val*PE_2_mag + 0+ (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_mag_reg_word_nb)
+```
+```{r}
+pp_check(m3_PE2_val_mag_reg_word_nb)
+```
+### PE_2 vs. exp_word
+####lmer
+```{r}
+# Using word_ratio
+m3_PE2_exp_word_ratio <- lmer(exp_word_ratio ~ PE_2 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_exp_word_ratio)
+```
+```{r}
+pp_check(m3_PE2_exp_word_ratio)
+```
+```{r}
+m3_PE2_exp_word <- lmer(Expression ~ PE_2 + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_exp_word)
+```
+```{r}
+pp_check(m3_PE2_exp_word)
+```
+#### glmer.nb
+```{r}
+m3_PE2_exp_word_nb <- glmer.nb(Expression ~ PE_2 +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_exp_word_nb)
+```
+```{r}
+pp_check(m3_PE2_exp_word_nb)
+```
+### PE_2_val vs. exp_word
+```{r}
+m3_PE2_val_exp_word_ratio <- lmer(exp_word_ratio ~ PE_2_val +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_exp_word_ratio)
+```
+```{r}
+emmeans(m3_PE2_val_exp_word_ratio, pairwise~PE_2_val, adjust = "none")
+```
+
+```{r}
+m3_PE2_val_exp_word <- lmer(Expression ~ PE_2_val + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_exp_word)
+```
+```{r}
+pp_check(m3_PE2_val_exp_word)
+```
+```{r}
+m3_PE2_val_exp_word_nb <- glmer.nb(Expression ~ PE_2_val + 0+ (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_exp_word_nb)
+```
+```{r}
+pp_check(m3_PE2_val_exp_word_nb)
+```
+####zero-inflated
+```{r}
+m3_ZINB <- glmmTMB(Expression ~ PE_2_val + (1|ID),
+                  ziformula = ~1,
+                  offset = log(exam_total_word),
+                  data = df_by_exam_word_count_wide_PE,
+                  family = nbinom3)
+
+# To see the model summary
+summary(m3_ZINB)
+```
+```{r}
+install.packages("DHARMa")
+library(DHARMa)
+
+simulationOutput <- simulateResiduals(m3_ZINB)
+
+# Plot the PPC
+plot(simulationOutput)
+```
+### PE_2_mag vs. exp_word_ratio
+####lmer
+```{r}
+m3_PE2_mag_exp_word_ratio <- lmer(exp_word_ratio ~ PE_2_mag +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_mag_exp_word_ratio)
+```
+```{r}
+m3_PE2_mag_exp_word <- lmer(Expression ~ PE_2_mag + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_mag_exp_word)
+```
+```{r}
+pp_check(m3_PE2_mag_exp_word)
+```
+###glmer.nb
+```{r}
+m3_PE2_mag_exp_word_nb <- glmer.nb(Expression ~ PE_2_mag + 0 + (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_mag_exp_word_nb)
+```
+```{r}
+pp_check(m3_PE2_mag_exp_word_nb)
+```
+####zero-inflated
+```{r}
+m3_ZINB <- glmmTMB(Expression ~ PE_2_mag + (1|ID),
+                  ziformula = ~1,
+                  offset = log(exam_total_word),
+                  data = df_by_exam_word_count_wide_PE,
+                  family = nbinom3)
+
+# To see the model summary
+summary(m3_ZINB)
+```
+```{r}
+install.packages("DHARMa")
+library(DHARMa)
+
+simulationOutput <- simulateResiduals(m3_ZINB)
+
+# Plot the PPC
+plot(simulationOutput)
+```
+### PE_2_val * PE_2_mag
+```{r}
+df_by_exam_word_count_wide_PE$PE_2_val <- as.factor(df_by_exam_word_count_wide_PE$PE_2_val)
+df_by_exam_word_count_wide_PE$PE_2_val <- relevel(df_by_exam_word_count_wide_PE$PE_2_val, ref = "positive")
+```
+
+```{r}
+m3_PE2_val_mag_exp<- lmer(exp_word_ratio ~ PE_2_val * PE_2_mag + 0+ (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_mag_exp)
+```
+```{r}
+m3_PE2_val_mag_exp_word <- lmer(Expression ~ PE_2_val * PE_2_mag + exam_total_word+ 0+ (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m3_PE2_val_mag_exp_word)
+```
+```{r}
+pp_check(m3_PE2_val_mag_exp_word)
+```
+```{r}
+m3_PE_2_val_mag_exp_word_nb <- glmer.nb(Expression ~ PE_2_val * PE_2_mag +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_PE_2_val_mag_exp_word_nb)
+```
+
+###EVPE vs. reg_word_ratio
+####lmer
+```{r}
+# Using word_ratio
+m4_EVPE_reg_word_ratio <- lmer(reg_word_ratio ~ EVPE +(1|ID) + (1|exam_num), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_reg_word_ratio)
+```
+```{r}
+pp_check(m4_EVPE_reg_word_ratio)
+```
+### I add df_mood here
+#### Exam
+```{r}
+df_senti_full <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/API/emaData_F24_phrase_sentiment_v5.csv")
+# It wierd that there is a cate as "-0.5", I think it is mixed too.
+df_senti_full <- df_senti_full %>% mutate(api_val_text = (case_when(api_val == 1.0 ~"POSITIVE",
+                                                               api_val == 0.5 ~ "MIXED",
+                                                               api_val == -0.5 ~ "MIXED",
+                                                               api_val == 0 ~ "NEUTRAL",
+                                                               api_val == -1 ~ "NEGATIVE")
+  
+))
+```
+```{r}
+df_senti_full <- df_senti_full %>% mutate(api_senti_score = api_val * api_intensity)
+
+df_senti_exam_tmp <- df_senti_full %>% dplyr::group_by(ID, exam_num) %>% dplyr::mutate(senti_exam = mean(api_senti_score))
+df_senti_exam <- df_senti_exam_tmp %>% select("ID", "exam_num", "senti_exam")
+df_senti_exam_unique <- unique(df_senti_exam)
+```
+
+
+
+```{r}
+df_mood <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/processed/premedEMA_exit_mood_final.csv")
+```
+
+```{r}
+df_by_exam_word_count_wide_PE_senti <- inner_join(df_by_exam_word_count_wide_PE,df_senti_exam_unique, by = c("ID", "exam_num") )
+
+df_by_exam_word_count_wide_PE_senti_gad <- inner_join(df_by_exam_word_count_wide_PE_senti, df_mood, by = "ID")
+```
+
+Exam-wise
+```{r}
+m_senti_EVPE_gad <- lmer(senti_exam ~ GAD*EVPE+ (1|ID) + (1|exam_num), data = df_by_exam_word_count_wide_PE_senti)
+summary(m_senti_EVPE_gad)
+```
+```{r}
+m_senti_EVPE_gad_score <- lmer(senti_exam ~ GAD_score*EVPE+ (1|ID) + (1|exam_num), data = df_by_exam_word_count_wide_PE_senti_gad)
+summary(m_senti_EVPE_gad_score)
+```
+
+```{r}
+m_senti_gad_score <- lmer(senti_exam ~ GAD_score + (1|ID) + (1|exam_num), data = df_by_exam_word_count_wide_PE_senti_gad)
+summary(m_senti_gad_score)
+```
+```{r}
+anova(m_senti_gad_score, m_senti_EVPE_gad_score)
+```
+
+
+```{r}
+m_senti_gad<- lmer(senti_exam ~ GAD + (1|ID) + (1|exam_num), data = df_by_exam_word_count_wide_PE_senti)
+summary(m_senti_gad)
+```
+
+```{r}
+m_senti_EVPE_gad <- lmer(senti_exam ~ EVPE+GAD_score + (1|ID) + (1|exam_num), data = df_by_exam_word_count_wide_PE_senti_gad)
+summary(m_senti_EVPE_gad)
+```
+
+```{r}
+m_senti_EVPE_reg_ratio_gad <- lmer(senti_exam ~ EVPE+reg_word_ratio+GAD_score + (1|ID) + (1|exam_num), data = df_by_exam_word_count_wide_PE_senti_gad)
+summary(m_senti_EVPE_reg_ratio_gad)
+```
+```{r}
+pp_check(m_senti_EVPE_reg_ratio_gad)
+```
+
+####response
+```{r}
+# The total word count of each label, per exam
+df_by_resp_word_count <- df_select %>% dplyr::group_by(ID, exam_num,ResponseNumber, label_api_text) %>% summarise(sum_word_count = sum(word_count), .groups = "drop")
+
+# The wide format
+df_by_resp_word_count_wide <- df_by_resp_word_count %>% group_by(ID, exam_num, ResponseNumber) %>% pivot_wider(names_from = label_api_text, values_from = sum_word_count)
+
+df_by_resp_word_count_wide <- df_by_resp_word_count_wide %>% mutate(across(where(is.numeric), ~replace(.,is.na(.), 0)))
+
+df_by_resp_word_count_wide <- df_by_resp_word_count_wide %>% dplyr::group_by(ID, exam_num, ResponseNumber) %>%
+  mutate(exam_total_word = sum(Expression + Regulation + Neither),
+         exp_word_ratio = Expression/exam_total_word,
+         reg_word_ratio = Regulation/exam_total_word,
+         nei_word_ratio = Neither/exam_total_word)
+```
+
+```{r}
+df_by_resp_word_count_PE <- inner_join(df_by_resp_word_count, df_PE_correct, by=c("ID", "exam_num"))
+df_by_resp_word_count_wide_PE <- inner_join(df_by_resp_word_count_wide, df_PE, by = c("ID", "exam_num"))
+```
+
+```{r}
+df_senti_response_tmp <- df_senti_full %>% dplyr::group_by(ID, exam_num, ResponseNumber) %>% dplyr::mutate(avg_senti_resp = mean(api_senti_score))
+
+df_senti_response_tmp <- df_senti_response_tmp %>% select(ID, exam_num, ResponseNumber, avg_senti_resp)
+
+df_senti_response <- unique(df_senti_response_tmp)
+```
+
+```{r}
+df_mood <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/processed/premedEMA_exit_mood_final.csv")
+```
+
+```{r}
+df_by_resp_word_count_wide_PE_senti <- inner_join(df_by_resp_word_count_wide_PE,df_senti_response, by = c("ID", "exam_num", "ResponseNumber") )
+
+df_by_resp_word_count_wide_PE_senti_gad <- inner_join(df_by_resp_word_count_wide_PE_senti, df_mood, by = "ID")
+```
+```{r}
+df_by_resp_word_count_wide_PE_senti_gad <- df_by_resp_word_count_wide_PE_senti_gad %>% dplyr::group_by(ID, exam_num, ResponseNumber) %>% dplyr::mutate(delta_resp_senti = lead(avg_senti_resp) - avg_senti_resp)
+```
+```{r}
+m_resp_senti_GAD <- lmer(avg_senti_resp ~ GAD + (1|exam_num) + (1|ID) + (1|ResponseNumber), data = df_by_resp_word_count_wide_PE_senti)
+summary(m_resp_senti_GAD)
+```
+
+```{r}
+m_resp_senti_GAD_EVPE <- lmer(avg_senti_resp ~ GAD*EVPE + (1|exam_num) + (1|ID) + (1|ResponseNumber), data = df_by_resp_word_count_wide_PE_senti)
+summary(m_resp_senti_GAD_EVPE)
+```
+```{r}
+p <-plot_model(m_resp_senti_GAD_EVPE, type = "int")
+p
+```
+```{r}
+library(ggeffects)
+library(lme4)
+pred_orig <- ggpredict(m_resp_senti_GAD_EVPE, terms = c("EVPE", "GAD"))
+plot(pred_orig)
+```
+
+
+```{r}
+m_resp_senti_GAD_score <- lmer(avg_senti_resp ~ GAD_score + (1|exam_num) + (1|ID) + (1|ResponseNumber), data = df_by_resp_word_count_wide_PE_senti_gad)
+summary(m_resp_senti_GAD_score)
+```
+```{r}
+m_resp_senti_GAD_score_EVPE <- lmer(avg_senti_resp ~ GAD_score*EVPE + (1|exam_num) + (1|ID) + (1|ResponseNumber), data = df_by_resp_word_count_wide_PE_senti_gad)
+summary(m_resp_senti_GAD_score_EVPE)
+```
+```{r}
+m_resp_senti_EVPE_reg_ratio_gad <- lmer(avg_senti_resp ~ EVPE*reg_word_ratio+GAD_score + (1|ID) + (1|exam_num), data = df_by_resp_word_count_wide_PE_senti_gad)
+
+summary(m_resp_senti_EVPE_reg_ratio_gad)
+```
+```{r}
+pp_check(m_resp_senti_EVPE_reg_ratio_gad)
+```
+##TBD
+```{r}
+df_response <- df %>%
+  distinct(ID, exam_num, responseNumber, avg_senti_resp) %>%
+  arrange(ID, exam_num, responseNumber) %>%
+  group_by(ID, exam_num) %>%
+  mutate(
+    delta_senti = avg_senti_resp - lag(avg_senti_resp)
+  ) %>%
+  ungroup()
+```
+
+
+```{r}
+m4_EVPE_reg_word <- lmer(Regulation ~ EVPE + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_reg_word)
+
+```
+```{r}
+pp_check(m4_EVPE_reg_word)
+```
+####glmer.nb
+```{r}
+m4_EVPE_reg_word_nb <- glmer.nb(Regulation ~ EVPE +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_reg_word_nb)
+```
+```{r}
+pp_check(m4_EVPE_reg_word_nb)
+```
+
+###EVPE_val vs. reg_word_ratio
+```{r}
+m4_EVPE_val_reg_word_ratio <- lmer(reg_word_ratio ~ EVPE_val +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_val_reg_word_ratio)
+```
+```{r}
+pp_check(m4_EVPE_val_reg_word_ratio)
+```
+```{r}
+plot_models(m4_EVPE_val_reg_word_ratio, title = "EVPE_val vs. Regulation ratio")
+```
+
+```{r}
+emmeans(m4_EVPE_val_reg_word_ratio, pairwise~EVPE_val, adjust = "none")
+```
+```{r}
+m4_EVPE_reg_val_word <- lmer(Regulation ~ EVPE_val + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_reg_val_word)
+```
+```{r}
+m4_EVPE_reg_val_word_nb <- glmer.nb(Regulation ~ EVPE_val + 0 + (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_reg_val_word_nb)
+```
+```{r}
+pp_check(m4_EVPE_reg_val_word)
+```
+
+###EVPE_mag vs. reg_word_ratio
+####lmer
+```{r}
+m4_EVPE_mag_reg_word_ratio <- lmer(reg_word_ratio ~ EVPE_mag +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_mag_reg_word_ratio)
+```
+```{r}
+pp_check(m4_EVPE_mag_reg_word_ratio)
+```
+```{r}
+df_by_exam_word_count_wide_PE$EVPE_val <- as.factor(df_by_exam_word_count_wide_PE$EVPE_val)
+df_by_exam_word_count_wide_PE$EVPE_val <- relevel(df_by_exam_word_count_wide_PE$EVPE_val, ref = "positive")
+```
+
+```{r}
+m4_EVPE_val_mag_reg_word_ratio <- lmer(reg_word_ratio ~ EVPE_val*EVPE_mag+0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_val_mag_reg_word_ratio)
+```
+```{r}
+df_by_exam_word_count_wide_PE_filter <- df_by_exam_word_count_wide_PE %>% filter(reg_word_ratio !=0)
+```
+
+```{r}
+m4_EVPE_val_mag_reg_word_ratio_nozero <- lmer(reg_word_ratio ~ EVPE_val*EVPE_mag +(1|ID), data = df_by_exam_word_count_wide_PE_filter)
+summary(m4_EVPE_val_mag_reg_word_ratio_nozero)
+```
+```{r}
+pp_check(m4_EVPE_val_mag_reg_word_ratio_nozero)
+```
+
+```{r}
+plot_model(m4_EVPE_val_mag_reg_word_ratio_nozero, type = "int")
+```
+
+```{r}
+plot_model(m4_EVPE_val_mag_reg_word_ratio, type = "int")
+```
+```{r}
+hist(df_by_exam_word_count_wide_PE$reg_word_ratio)
+```
+
+###EVPE vs. exp
+```{r}
+# Using word_ratio
+m4_EVPE_exp_word_ratio <- lmer(exp_word_ratio ~ EVPE +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_exp_word_ratio)
+```
+```{r}
+pp_check(m4_EVPE_exp_word_ratio)
+```
+```{r}
+m4_EVPE_exp_word <- lmer(Expression ~ EVPE + exam_total_word + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_exp_word)
+```
+```{r}
+pp_check(m4_EVPE_exp_word)
+```
+#### glmer.nb
+```{r}
+m4_EVPE_exp_word_nb <- glmer.nb(Expression ~ EVPE +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_exp_word_nb)
+```
+```{r}
+pp_check(m4_EVPE_exp_word_nb)
+```
+#### EVPE_val vs. exp_word
+```{r}
+m3_EVPE_val_exp_word_ratio <- lmer(exp_word_ratio ~ EVPE_val +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_EVPE_val_exp_word_ratio)
+```
+```{r}
+emmeans(m3_EVPE_val_exp_word_ratio, pairwise~EVPE_val, adjust = "none")
+```
+
+```{r}
+m3_EVPE_val_exp_word <- lmer(Expression ~ EVPE_val + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m3_EVPE_val_exp_word)
+```
+```{r}
+pp_check(m3_EVPE_val_exp_word)
+```
+```{r}
+m3_EVPE_val_exp_word_nb <- glmer.nb(Expression ~ EVPE_val + 0+ (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m3_EVPE_val_exp_word_nb)
+```
+```{r}
+pp_check(m3_EVPE_val_exp_word_nb)
+```
+####EVPE_mag vs. exp_word
+```{r}
+m4_EVPE_mag_exp_word_ratio <- lmer(exp_word_ratio ~ EVPE_mag +0 +(1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_mag_exp_word_ratio)
+```
+
+```{r}
+m4_EVPE_mag_exp_word <- lmer(Expression ~ EVPE_mag + exam_total_word + 0 + (1|ID), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_mag_exp_word)
+```
+
+```{r}
+m4_EVPE_mag_exp_word_nb <- glmer.nb(Expression ~ EVPE_mag + 0+ (1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_mag_exp_word_nb)
+```
+#### EVPE_val * EVPE_mag
+```{r}
+m4_EVPE_val_mag_exp_word <- lmer(exp_word_ratio ~ EVPE_val * EVPE_mag + 0+ (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_val_mag_exp_word)
+```
+```{r}
+m4_EVPE_val_mag_exp_word <- lmer(Expression ~ EVPE_val * EVPE_mag + exam_total_word+ 0+ (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_val_mag_exp_word)
+```
+```{r}
+m4_EVPE_val_mag_exp_word_nb <- glmer.nb(Expression ~ EVPE_val * EVPE_mag +exam_total_word + 0+ (1|ID), offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m4_EVPE_val_mag_exp_word_nb)
+```
+
+```{r}
+m5_PE_2_EVPE_reg_word_ratio <- lmer(reg_word_ratio ~ PE_2 + EVPE + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_2_EVPE_reg_word_ratio)
+```
+```{r}
+m5_PE_2_EVPE_reg_word <- lmer(Regulation ~ PE_2 + EVPE + exam_total_word+ (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_2_EVPE_reg_word)
+```
+```{r}
+m5_PE_2_EVPE_reg_word_nb <- glmer.nb(Regulation ~ PE_2 + EVPE +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_2_EVPE_reg_word_nb)
+```
+```{r}
+plot_model(m5_PE_2_EVPE_reg_word_nb)
+```
+
+```{r}
+m5_PE_2_EVPE_val_mag_reg_word_ratio <- lmer(reg_word_ratio ~ PE_2_val*PE_2_mag + EVPE_val*EVPE_mag + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_2_EVPE_val_mag_reg_word_ratio)
+```
+```{r}
+plot_model(m5_PE_2_EVPE_val_mag_reg_word_ratio, type = "int")
+```
+```{r}
+m5_PE_2_EVPE_val_mag_reg_word_nb <- glmer.nb(Regulation ~ PE_2_val*PE_2_mag + EVPE_val*EVPE_mag +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_2_EVPE_val_mag_reg_word_nb)
+```
+```{r}
+plot_model(m5_PE_2_EVPE_val_mag_reg_word_nb, type = "int")
+```
+
+```{r}
+m5_PE_1_EVPE_reg_word_ratio <- lmer(reg_word_ratio ~ PE_1 + EVPE + (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_1_EVPE_reg_word_ratio)
+```
+```{r}
+m5_PE_1_EVPE_reg_word <- lmer(Regulation ~ PE_1 + EVPE + exam_total_word+ (1|ID) , data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_1_EVPE_reg_word)
+```
+
+```{r}
+m5_PE_1_EVPE_reg_word_nb <- glmer.nb(Regulation ~ PE_1 + EVPE +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_1_EVPE_reg_word_nb)
+```
+```{r}
+m5_PE_1_PE_2_EVPE_reg_word_nb <- glmer.nb(Regulation ~ PE_1 +PE_2+ EVPE +(1|ID) ,offset = log(exam_total_word), data = df_by_exam_word_count_wide_PE)
+summary(m5_PE_1_PE_2_EVPE_reg_word_nb)
+```
+
+## Brms
+### Loess
+#### PE_2
+```{r}
+brm_PE_2_val_mag_ratio <- brm(reg_word_ratio ~ t2(PE_2_mag, by = PE_2_val),
+            data = df_by_exam_word_count_wide_PE, chains = 4)
+summary(brm_PE_2_val_mag_ratio)
+plot(conditional_effects(brm_PE_2_val_mag_ratio), ask = FALSE)
+```
+```{r}
+brm_PE_2_val_mag <- brm(Regulation ~ t2(PE_2_mag, by = PE_2_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_PE, chains = 4)
+summary(brm_PE_2_val_mag)
+plot(conditional_effects(brm_PE_2_val_mag), ask = FALSE)
+```
+#### PE_1
+```{r}
+brm_PE_1_val_mag_ratio <- brm(reg_word_ratio ~ t2(PE_1_mag, by = PE_1_val),
+            data = df_by_exam_word_count_wide_PE, chains = 4)
+summary(brm_PE_1_val_mag_ratio)
+plot(conditional_effects(brm_PE_1_val_mag_ratio), ask = FALSE)
+```
+```{r}
+brm_PE_1_val_mag <- brm(Regulation ~ t2(PE_1_mag, by = PE_1_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_PE, chains = 4)
+summary(brm_PE_1_val_mag)
+plot(conditional_effects(brm_PE_1_val_mag), ask = FALSE)
+```
+#### EVPE
+```{r}
+brm_EVPE_val_mag <- brm(Regulation ~ t2(EVPE_mag, by = EVPE_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_PE, chains = 4)
+summary(brm_EVPE_val_mag)
+plot(conditional_effects(brm_EVPE_val_mag), ask = FALSE)
+```
+```{r}
+pp_check(brm_EVPE_val_mag)
+```
+```{r}
+brm_EVPE_val_mag_ratio <- brm(reg_word_ratio ~ t2(EVPE_mag, by = EVPE_val),
+            data = df_by_exam_word_count_wide_PE, chains = 4)
+summary(brm_EVPE_val_mag_ratio)
+plot(conditional_effects(brm_EVPE_val_mag_ratio), ask = FALSE)
+```
+```{r}
+pp_check(brm_EVPE_val_mag_ratio)
+```
+
+####PE<40
+```{r}
+df_by_exam_word_count_wide_EVPE_ub <- df_by_exam_word_count_wide_PE %>% filter(EVPE_mag<=40)
+brm_EVPE_val_mag_ratio_ub <- brm(reg_word_ratio ~ t2(EVPE_mag, by = EVPE_val),
+            data = df_by_exam_word_count_wide_EVPE_ub, chains = 4)
+summary(brm_EVPE_val_mag_ratio_ub)
+plot(conditional_effects(brm_EVPE_val_mag_ratio_ub), ask = FALSE)
+```
+```{r}
+brm_EVPE_val_mag_ub <- brm(Regulation ~ t2(EVPE_mag, by = EVPE_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_EVPE_ub, chains = 4)
+summary(brm_EVPE_val_mag_ub)
+plot(conditional_effects(brm_EVPE_val_mag_ub), ask = FALSE)
+```
+```{r}
+df_by_exam_word_count_wide_PE_2_ub <- df_by_exam_word_count_wide_PE %>% filter(PE_2_mag<=20)
+brm_PE_2_val_mag_ratio_ub <- brm(reg_word_ratio ~ t2(PE_2_mag, by = PE_2_val),
+            data = df_by_exam_word_count_wide_PE_2_ub, chains = 4)
+summary(brm_PE_2_val_mag_ratio_ub)
+plot(conditional_effects(brm_PE_2_val_mag_ratio_ub), ask = FALSE)
+```
+```{r}
+brm_PE_2_val_mag_ub <- brm(Regulation ~ t2(PE_2_mag, by = PE_2_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_PE_2_ub, chains = 4)
+summary(brm_PE_2_val_mag_ub)
+plot(conditional_effects(brm_PE_2_val_mag_ub), ask = FALSE)
+```
+```{r}
+df_by_exam_word_count_wide_PE_2_posneg <- df_by_exam_word_count_wide_PE %>% filter(PE_2_val != "zero" & PE_2_mag <=40)
+df_by_exam_word_count_wide_PE_2_posneg$PE_2_val <- relevel(df_by_exam_word_count_wide_PE_2_posneg$PE_2_val, ref = "positive")
+brm_PE_2_val_mag_ratio_posneg <- brm(reg_word_ratio ~ t2(PE_2_mag, by = PE_2_val),
+            data = df_by_exam_word_count_wide_PE_2_posneg, chains = 4)
+summary(brm_PE_2_val_mag_ratio_posneg)
+plot(conditional_effects(brm_PE_2_val_mag_ratio_posneg), ask = FALSE)
+```
+
+```{r}
+brm_PE_2_val_mag_posneg <- brm(Regulation ~ t2(PE_2_mag, by = PE_2_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_PE_2_posneg, chains = 4)
+summary(brm_PE_2_val_mag_posneg)
+plot(conditional_effects(brm_PE_2_val_mag_posneg), ask = FALSE)
+```
+
+```{r}
+df_by_exam_word_count_wide_PE_1_ub <- df_by_exam_word_count_wide_PE %>% filter(PE_1_mag<=40)
+brm_PE_1_val_mag_ratio_ub <- brm(reg_word_ratio ~ t2(PE_1_mag, by = PE_1_val),
+            data = df_by_exam_word_count_wide_PE_1_ub, chains = 4)
+summary(brm_PE_1_val_mag_ratio_ub)
+plot(conditional_effects(brm_PE_1_val_mag_ratio_ub), ask = FALSE)
+```
+```{r}
+brm_PE_1_val_mag_ub <- brm(Regulation ~ t2(PE_1_mag, by = PE_1_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_PE_1_ub, chains = 4)
+summary(brm_PE_1_val_mag_ub)
+plot(conditional_effects(brm_PE_1_val_mag_ub), ask = FALSE)
+```
+```{r}
+df_by_exam_word_count_wide_PE_1_posneg <- df_by_exam_word_count_wide_PE %>% filter(PE_1_val != "zero" & PE_1_mag <=40)
+df_by_exam_word_count_wide_PE_1_posneg$PE_1_val <- as.factor(df_by_exam_word_count_wide_PE_1_posneg$PE_1_val)
+df_by_exam_word_count_wide_PE_1_posneg$PE_1_val <- relevel(df_by_exam_word_count_wide_PE_1_posneg$PE_1_val, ref = "positive")
+brm_PE_1_val_mag_ratio_posneg <- brm(reg_word_ratio ~ t2(PE_1_mag, by = PE_1_val),
+            data = df_by_exam_word_count_wide_PE_1_posneg, chains = 4)
+summary(brm_PE_1_val_mag_ratio_posneg)
+plot(conditional_effects(brm_PE_1_val_mag_ratio_posneg), ask = FALSE)
+```
+```{r}
+brm_PE_1_val_mag_posneg <- brm(Regulation ~ t2(PE_1_mag, by = PE_1_val) + exam_total_word,
+            data = df_by_exam_word_count_wide_PE_1_posneg, chains = 4)
+summary(brm_PE_1_val_mag_posneg)
+plot(conditional_effects(brm_PE_1_val_mag_posneg), ask = FALSE)
+```
+### Linear
+#### PE_2
+```{r}
+zoib_PE_2_reg_ratio_formula <- bf(reg_ratio ~ PE_2_mag*PE_2_val, 
+                                 phi ~ 1,
+                                 zoi~1,
+                                 coi~1)
+```
+```{r}
+df_by_exam_word_count_wide_PE2 <- df_by_exam_word_count_wide_PE %>% filter(PE_2_val!="zero")
+```
+```{r}
+df_by_exam_pe_pe2 <- df_by_exam_pe %>% filter(PE_2_val !="zero")
+df_by_exam_pe_pe2 <- df_by_exam_pe_pe2 %>% filter(PE_2_mag <=60)
+```
+```{r}
+brm_linear_PE_2_val_mag_ratio_60 <- brm(zoib_PE_2_reg_ratio_formula,
+            data = df_by_exam_pe_pe2, family = zero_one_inflated_beta())
+summary(brm_linear_PE_2_val_mag_ratio_60)
+plot(conditional_effects(brm_linear_PE_2_val_mag_ratio_60), ask = FALSE)
+pp_check(brm_linear_PE_2_val_mag_ratio_60)
+```
+```{r}
+brm_linear_PE_2_val_mag_ratio <- brm(zoib_PE_2_reg_ratio_formula,
+            data = df_by_exam_pe_pe2, family = zero_one_inflated_beta())
+summary(brm_linear_PE_2_val_mag_ratio)
+plot(conditional_effects(brm_linear_PE_2_val_mag_ratio), ask = FALSE)
+pp_check(brm_linear_PE_2_val_mag_ratio)
+```
+#### Plotting
+```{r}
+PE_2_val_mag_reg_phrase_ratio_plotting <- conditional_effects(brm_linear_PE_2_val_mag_ratio)
+PE_2_val_mag_reg_phrase_ratio_plotting_list <- plot(PE_2_val_mag_reg_phrase_ratio_plotting, plot = FALSE)
+PE_2_val_mag_reg_phrase_ratio_plotting_main <- PE_2_val_mag_reg_phrase_ratio_plotting_list[[3]]
+```
+
+```{r}
+PE_2_val_mag_reg_ratio_phrase_plot_main_fn <- PE_2_val_mag_reg_phrase_ratio_plotting_main +
+  labs(#title = "Interaction effect of PE 2 valence and magnitude on regulation",
+    x = "|PE|",
+    y = "Regulation proportion",
+    color = "PE valence",
+    fill = "PE valence") +
+  theme_classic() +
+  theme(
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0
+    )
+  )
+PE_2_val_mag_reg_ratio_phrase_plot_main_fn
+```
+```{r}
+brm_linear_PE_2_pos_neg_mag_ratio <- brm(zoib_PE_2_reg_ratio_formula,
+            data = df_by_exam_word_count_wide_PE2, family = zero_one_inflated_beta())
+summary(brm_linear_PE_2_pos_neg_mag_ratio)
+plot(conditional_effects(brm_linear_PE_2_pos_neg_mag_ratio), ask = FALSE)
+pp_check(brm_linear_PE_2_pos_neg_mag_ratio)
+```
+
+```{r}
+brm_PE_2_val_mag <- brm(Regulation ~ t2(PE_2_mag, by = PE_2_val) + exam_total_word,
+            data = df_by_exam_pe, chains = 4)
+summary(brm_PE_2_val_mag)
+plot(conditional_effects(brm_PE_2_val_mag), ask = FALSE)
+```
+
+```{r}
+zoib_EVPE_only_reg_ratio_formula <- bf(reg_word_ratio ~ EVPE, 
+                                 phi ~ 1,
+                                 zoi~1,
+                                 coi~1)
+```
+
+```{r}
+brm_linear_EVPE_ratio <- brm(zoib_EVPE_only_reg_ratio_formula,
+            data = df_by_exam_word_count_wide_PE, family = zero_one_inflated_beta())
+summary(brm_linear_EVPE_ratio)
+plot(conditional_effects(brm_linear_EVPE_ratio), ask = FALSE)
+pp_check(brm_linear_EVPE_ratio)
+get_prior(brm_linear_EVPE_ratio)
+```
+#### Final model: reg_ratio ~ EVPE_val * EVPE_mag
+
+
+```{r}
+zoib_EVPE_reg_phrase_ratio_formula <- bf(reg_ratio ~ EVPE_mag*EVPE_val, 
+                                 phi ~ 1,
+                                 zoi~1,
+                                 coi~1)
+```
+
+```{r}
+brm_linear_EVPE_val_mag_reg_phrase_ratio <- brm(zoib_EVPE_reg_phrase_ratio_formula,
+            data = df_by_exam_pe, family = zero_one_inflated_beta())
+summary(brm_linear_EVPE_val_mag_reg_phrase_ratio)
+plot(conditional_effects(brm_linear_EVPE_val_mag_reg_phrase_ratio), ask = FALSE)
+pp_check(brm_linear_EVPE_val_mag_reg_phrase_ratio)
+get_prior(brm_linear_EVPE_val_mag_reg_phrase_ratio)
+```
+#### Plotting
+```{r}
+EVPE_val_mag_reg_phrase_ratio_plotting <- conditional_effects(brm_linear_EVPE_val_mag_reg_phrase_ratio)
+EVPE_val_mag_reg_phrase_ratio_plotting_list <- plot(EVPE_val_mag_reg_phrase_ratio_plotting, plot = FALSE)
+EVPE_val_mag_reg_phrase_ratio_plotting_main <- EVPE_val_mag_reg_phrase_ratio_plotting_list[[3]]
+```
+
+```{r}
+EVPE_val_mag_reg_ratio_phrase_plot_main_fn <- EVPE_val_mag_reg_phrase_ratio_plotting_main +
+  labs(#title = "Interaction effect of PE valence and magnitude on regulation",
+    x = "|PE|",
+    y = "Regulation proportion",
+    color = "PE valence",
+    fill = "PE valence") +
+  theme_classic() +
+  theme(
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0
+    )
+  )
+EVPE_val_mag_reg_ratio_phrase_plot_main_fn
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/interaction_EVPE_val_mag_reg_ratio_phrase_abs.png",plot = EVPE_val_mag_reg_ratio_phrase_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/interaction_EVPE_val_mag_reg_ratio_phrase_abs.pdf",plot = EVPE_val_mag_reg_ratio_phrase_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+
+ggsave(file = "/Users/runanwang/Library/CloudStorage/Box-Box/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/interaction_EVPE_val_mag_reg_ratio_phrase_abs.eps",plot = EVPE_val_mag_reg_ratio_phrase_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+```
+
+```{r}
+zoib_EVPE_reg_ratio_formula <- bf(reg_word_ratio ~ EVPE_mag*EVPE_val, 
+                                 phi ~ 1,
+                                 zoi~1,
+                                 coi~1)
+```
+
+```{r}
+brm_linear_EVPE_val_mag_ratio <- brm(zoib_EVPE_reg_ratio_formula,
+            data = df_by_exam_word_count_wide_PE, family = zero_one_inflated_beta())
+summary(brm_linear_EVPE_val_mag_ratio)
+plot(conditional_effects(brm_linear_EVPE_val_mag_ratio), ask = FALSE)
+pp_check(brm_linear_EVPE_val_mag_ratio)
+get_prior(brm_linear_EVPE_val_mag_ratio)
+```
+```{r}
+plot(brm_linear_EVPE_val_mag_ratio)
+```
+```{r}
+plot(conditional_effects(brm_linear_EVPE_val_mag_ratio, method = "posterior_epred"), points = TRUE)
+```
+```{r}
+library(bayesplot)
+library(tidybayes)
+
+# Extract draws on the response/probability scale
+draws <- as_draws_df(brm_linear_EVPE_val_mag_ratio)
+names(draws)
+interaction_draws <- draws$`b_EVPE_mag:EVPE_valpositive`
+mean(interaction_draws > 0)
+```
+
+```{r}
+EVPE_val_mag_reg_ratio_plotting <- conditional_effects(brm_linear_EVPE_val_mag_ratio)
+EVPE_val_mag_reg_ratio_plotting_list <- plot(EVPE_val_mag_reg_ratio_plotting, plot = FALSE)
+EVPE_val_mag_reg_ratio_plot_main <- EVPE_val_mag_reg_ratio_plotting_list[[3]]
+```
+
+```{r}
+EVPE_val_mag_reg_ratio_plot_main_fn <- EVPE_val_mag_reg_ratio_plot_main +
+  labs(title = "Interaction effect of PE valence and magnitude on regulation",
+    x = "｜PE｜",
+    y = "Regulation proportion",
+    color = "PE valence",
+    fill = "PE valence") +
+  theme_classic() +
+  theme(
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0
+    )
+  )
+EVPE_val_mag_reg_ratio_plot_main_fn
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/interaction_EVPE_val_mag_reg_ratio_abs.png",plot = EVPE_val_mag_reg_ratio_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/interaction_EVPE_val_mag_reg_ratio_abs.pdf",plot = EVPE_val_mag_reg_ratio_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/journal_submit/plots/interaction_EVPE_val_mag_reg_ratio_abs.eps",plot = EVPE_val_mag_reg_ratio_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+```
+
+```{r}
+lmer_linear_EVPE_val_mag_ratio <- lmer(reg_word_ratio ~ EVPE_mag*EVPE_val+(1|ID)+(1|exam_num), data = df_by_exam_word_count_wide_PE)
+
+summary(lmer_linear_EVPE_val_mag_ratio)
+```
+```{r}
+AIC(lmer_linear_EVPE_val_mag_ratio, brm_linear_EVPE_val_mag_ratio)
+BIC(lmer_linear_EVPE_val_mag_ratio, brm_linear_EVPE_val_mag_ratio)
+```
+#### reg_word_ratio ~ EVPE_val * EVPE_mag * GAD
+```{r}
+zoib_EVPE_reg_ratio_GAD_formula <- bf(reg_word_ratio ~ EVPE_mag*EVPE_val*GAD + (1|ID) + (1|exam_num), 
+                                 phi ~ 1,
+                                 zoi~1,
+                                 coi~1)
+```
+
+```{r}
+brm_linear_EVPE_val_mag_ratio_GAD <- brm(zoib_EVPE_reg_ratio_GAD_formula,
+            data = df_by_exam_word_count_wide_PE, family = zero_one_inflated_beta())
+summary(brm_linear_EVPE_val_mag_ratio_GAD)
+plot(conditional_effects(brm_linear_EVPE_val_mag_ratio_GAD), ask = FALSE)
+pp_check(brm_linear_EVPE_val_mag_ratio_GAD)
+get_prior(brm_linear_EVPE_val_mag_ratio_GAD)
+```
+
+```{r}
+df_zoib <- df_by_exam_word_count_wide_PE %>%
+  dplyr::mutate(
+    EVPE_mag_z = as.numeric(scale(EVPE_mag)),
+    GAD_z = as.numeric(scale(GAD)),
+    EVPE_val = factor(EVPE_val)
+  )
+```
+```{r}
+priors <- c(
+  prior(normal(0, 0.5), class = "b"),
+  prior(normal(0, 1), class = "Intercept"),
+  prior(normal(0, 1), class = "phi"),
+  prior(normal(0, 1), class = "Intercept", dpar = "zoi"),
+  prior(normal(0, 1), class = "Intercept", dpar = "coi")
+)
+```
+```{r}
+zoib_EVPE_reg_ratio_GAD_formula <- bf(
+  reg_word_ratio ~ EVPE_mag_z * EVPE_val * GAD_z,
+  phi ~ 1,
+  zoi ~ 1,
+  coi ~ 1
+)
+
+brm_linear_EVPE_val_mag_ratio_GAD <- brm(
+  zoib_EVPE_reg_ratio_GAD_formula,
+  data = df_zoib,
+  family = zero_one_inflated_beta(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95, max_treedepth = 15),
+  init = 0
+)
+```
+
+```{r}
+summary(brm_linear_EVPE_val_mag_ratio_GAD)
+plot(conditional_effects(brm_linear_EVPE_val_mag_ratio_GAD), ask = FALSE)
+pp_check(brm_linear_EVPE_val_mag_ratio_GAD)
+```
+#### reg_phrase_ratio ~ EVPE_val * EVPE_mag * GAD
+```{r}
+df_zoib_reg_phrase <- df_by_exam_pe %>%
+  dplyr::mutate(
+    EVPE_mag_z = as.numeric(scale(EVPE_mag)),
+    GAD_z = as.numeric(scale(GAD)),
+    EVPE_val = factor(EVPE_val)
+  )
+```
+
+```{r}
+priors <- c(
+  prior(normal(0, 0.5), class = "b"),
+  prior(normal(0, 1), class = "Intercept"),
+  prior(normal(0, 1), class = "phi"),
+  prior(normal(0, 1), class = "Intercept", dpar = "zoi"),
+  prior(normal(0, 1), class = "Intercept", dpar = "coi")
+)
+```
+```{r}
+zoib_EVPE_reg_phrase_ratio_GAD_formula <- bf(
+  reg_ratio ~ EVPE_mag_z * EVPE_val * GAD_z,
+  phi ~ 1,
+  zoi ~ 1,
+  coi ~ 1
+)
+
+brm_linear_EVPE_val_mag_phrase_ratio_GAD <- brm(
+  zoib_EVPE_reg_phrase_ratio_GAD_formula,
+  data = df_zoib_reg_phrase,
+  family = zero_one_inflated_beta(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95, max_treedepth = 15),
+  init = 0
+)
+```
+```{r}
+summary(brm_linear_EVPE_val_mag_phrase_ratio_GAD)
+plot(conditional_effects(brm_linear_EVPE_val_mag_phrase_ratio_GAD), ask = FALSE)
+pp_check(brm_linear_EVPE_val_mag_phrase_ratio_GAD)
+```
+#### reg_ratio ~ EVPE_val * EVPE_mag* GAD_score
+```{r}
+df_zoib_GAD_score <- inner_join(df_zoib, df_mood, by = "ID")
+``` 
+```{r}
+df_zoib_GAD_score <- df_zoib_GAD_score %>%
+  dplyr::mutate(
+    GAD_score_z = as.numeric(scale(GAD_score))
+  )
+```
+
+```{r}
+priors <- c(
+  prior(normal(0, 0.5), class = "b"),
+  prior(normal(0, 1), class = "Intercept"),
+  prior(normal(0, 1), class = "phi"),
+  prior(normal(0, 1), class = "Intercept", dpar = "zoi"),
+  prior(normal(0, 1), class = "Intercept", dpar = "coi")
+)
+```
+```{r}
+zoib_EVPE_reg_ratio_GAD_score_formula <- bf(
+  reg_word_ratio ~ EVPE_mag_z * EVPE_val * GAD_score_z,
+  phi ~ 1,
+  zoi ~ 1,
+  coi ~ 1
+)
+
+brm_linear_EVPE_val_mag_ratio_GAD_score <- brm(
+  zoib_EVPE_reg_ratio_GAD_score_formula,
+  data = df_zoib_GAD_score,
+  family = zero_one_inflated_beta(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95, max_treedepth = 15),
+  init = 0
+)
+```
+
+```{r}
+summary(brm_linear_EVPE_val_mag_ratio_GAD_score)
+plot(conditional_effects(brm_linear_EVPE_val_mag_ratio_GAD_score), ask = FALSE)
+pp_check(brm_linear_EVPE_val_mag_ratio_GAD_score)
+```
+
+#### PE_1
+```{r}
+df_by_exam_word_count_wide_PE1 <- df_by_exam_word_count_wide_PE %>% filter(PE_1_val!="zero")
+```
+
+```{r}
+zoib_PE_1_reg_ratio_formula <- bf(reg_word_ratio ~ PE_1_mag*PE_1_val, 
+                                 phi ~ 1,
+                                 zoi~1,
+                                 coi~1)
+```
+
+```{r}
+brm_linear_PE_1_val_mag_ratio <- brm(zoib_PE_1_reg_ratio_formula,
+            data = df_by_exam_word_count_wide_PE, family = zero_one_inflated_beta())
+summary(brm_linear_PE_1_val_mag_ratio)
+plot(conditional_effects(brm_linear_PE_1_val_mag_ratio), ask = FALSE)
+pp_check(brm_linear_PE_1_val_mag_ratio)
+```
+```{r}
+brm_linear_PE_1_pos_neg_mag_ratio <- brm(zoib_PE_1_reg_ratio_formula,
+            data = df_by_exam_word_count_wide_PE1, family = zero_one_inflated_beta())
+summary(brm_linear_PE_1_pos_neg_mag_ratio)
+plot(conditional_effects(brm_linear_PE_1_pos_neg_mag_ratio), ask = FALSE)
+pp_check(brm_linear_PE_1_pos_neg_mag_ratio)
+```
+####Plotting
+```{r}
+EVPE_val_mag_reg_ratio_plotting <- conditional_effects(brm_linear_EVPE_val_mag_ratio)
+EVPE_val_mag_reg_ratio_plotting_list <- plot(EVPE_val_mag_reg_ratio_plotting, plot = FALSE)
+EVPE_val_mag_reg_ratio_plot_main <- EVPE_val_mag_reg_ratio_plotting_list[[3]]
+```
+```{r}
+EVPE_val_mag_reg_ratio_plot_main_fn <- EVPE_val_mag_reg_ratio_plot_main +
+  labs(title = "Interaction effect of EVPE valence and magnitude on regulation",
+    x = "The magnitude of EVPE",
+    y = "Regulation-related word ratio",
+    color = "EVPE valence",
+    fill = "EVPE valence") +
+  theme_classic() +
+  theme(
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0
+    )
+  )
+EVPE_val_mag_reg_ratio_plot_main_fn
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/interaction_EVPE_val_mag_reg_ratio.png",plot = EVPE_val_mag_reg_ratio_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+
+ggsave(file = "/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/Final_plot/interaction_EVPE_val_mag_reg_ratio.pdf",plot = EVPE_val_mag_reg_ratio_plot_main_fn, width = 6, heigh = 4, dpi = 300)
+```
+
+
+
+# discarded
+```{r, include = FALSE}
+# fit_word_count_label <- lmer(sum_word_count ~ label_api_text  + (1|ID), data = df_by_exam_word_count_PE)
+# 
+# summary(fit_word_count_label)
+
+# emmeans(fit_word_count_label, pairwise~label_api_text, adjust = "none")
+
+# fit_word_count_label_exam <- lmer(sum_word_count ~ label_api_text+exam_num+label_api_text*exam_num  + 0+ (1|ID), data = df_by_exam_word_count_PE)
+
+# summary(fit_word_count_label_exam)
+
+# pp_check(fit_word_count_label_exam)
+```
+
+```{r, include = FALSE}
+# fit_word_count_label_nb <- glmer.nb(sum_word_count ~ label_api_text + (1|ID), data = df_by_exam_word_count_PE)
+# summary(fit_word_count_label_nb)
+
+# pp_check(fit_word_count_label_nb)
+
+# fit_word_count_label_exam_nb <- glmer.nb(sum_word_count ~ label_api_text + exam_num + label_api_text*exam_num + (1|ID), data = df_by_exam_word_count_PE)
+# summary(fit_word_count_label_exam_nb)
+
+# pp_check(fit_word_count_label_exam_nb)
+```
+
+```{r, include = FALSE}
+fit_word_count_PE1 <- lmer(sum_word_count ~ PE_1 + label_api_text+label_api_text*PE_1 + (1|ID), data = df_by_exam_word_count_PE)
+
+summary(fit_word_count_PE1)
+
+fit_word_count_PE2 <- lmer(sum_word_count ~ PE_2 + label_api_text+label_api_text*PE_2 + (1|ID), data = df_by_exam_word_count_PE)
+
+summary(fit_word_count_PE2)
+
+# fit_word_count_exam_PE <- lmer(sum_word_count ~ exam_num+label_api_text + (1|ID), data = df_by_exam_word_count_PE)
+# 
+# summary(fit_word_count_exam_PE)
+```
+
+```{r, include = FALSE}
+# fit_word_count_cat_exam_PE_nb <- glmer.nb(sum_word_count ~ exam_num+label_api_text + (1|ID), data = df_by_exam_word_count_PE)
+# 
+# summary(fit_word_count_cat_exam_PE_nb)
+
+# pp_check(fit_word_count_cat_exam_PE_nb)
+
+# fit_word_count_label_PE1_nb <- glmer.nb(sum_word_count ~ label_api_text + PE_1 + label_api_text*PE_1 + (1|ID), data = df_by_exam_word_count_PE)
+# 
+# summary(fit_word_count_label_PE1_nb)
+# pp_check(fit_word_count_label_PE1_nb)
+
+# fit_word_count_label_PE2_nb <- glmer.nb(sum_word_count ~ label_api_text + PE_2 + exam_num+ label_api_text*PE_2*exam_num + (1|ID), data = df_by_exam_word_count_PE)
+# 
+# summary(fit_word_count_label_PE2_nb)
+# pp_check(fit_word_count_label_PE2_nb)
+
+# fit_word_count_label_PE2_exam_nb <- glmer.nb(sum_word_count ~ label_api_text + PE_2 + exam_num+ label_api_text*PE_2*exam_num + (1|ID), data = df_by_exam_word_count_PE)
+# 
+# summary(fit_word_count_label_PE2_exam_nb)
+# pp_check(fit_word_count_label_PE2_exam_nb)
+```
+
+##Temporal Autocorrelation
+### acf()
+*** padding the exam_resp data***
+```{r}
+# Pad the dataset with NA
+# Because the acf() function assumes each data point is equally separate, adding NA rows to even the number of data point
+# The max data is 18, therefore, analyze 17 lags. Adding more rows (18) between each sample unit in the dataset (why?)
+df_by_exam_resp_expand <- df_by_exam_resp %>% group_by(ID) %>% complete(exam_resp = 1:36) 
+```
+```{r}
+df_by_exam_resp_PE <- inner_join(df_by_exam_resp, df_PE_correct, by=c("ID", "exam_num"))
+```
+
+```{r}
+fit_acf_brms <- brm(Regulation ~ PE_1 + exam_num + (1|ID), data = df_by_exam_resp_PE %>% filter(!is.na(PE_1)), family = negbinomial())
+
+df_by_exam_resp_PE_no_na <- df_by_exam_resp_PE %>% filter(!is.na(PE_1))
+
+df_by_exam_resp_PE_no_na$res <- residuals(fit_acf_brms)
+```
+
+```{r}
+df_by_exam_resp_PE_no_na_expand <- df_by_exam_resp_PE_no_na %>% group_by(ID) %>% complete(exam_resp = 1:36) 
+
+acf(df_by_exam_resp_PE_no_na_expand$res, lag.max = 17, na.action = na.pass, ci = 0)
+
+```
+## brms temporal Autocorrelation
+
+
+```{r}
+rows_to_jitter <- df_by_resp_time_tmp %>%
+  group_by(ID, time_since_grade_reveal_mins) %>%
+  filter(n() > 1) %>% # This identifies groups with duplicates
+  ungroup() %>%
+  pull(original_row_index)
+```
+```{r}
+set.seed(123) # For reproducibility of the jitter
+df_by_resp_time$time_since_grade_reveal_mins[rows_to_jitter] <-
+  df_by_resp_time$time_since_grade_reveal_mins[rows_to_jitter] +
+  runif(length(rows_to_jitter), 0.001, 0.005)
+
+# check
+# duplicated_times_after_jitter <- df_by_resp_time %>%
+#   group_by(ID, time_since_grade_reveal_mins) %>%
+#   filter(n() > 1) %>%
+#   ungroup()
+# 
+# duplicated_times_after_jitter
+```
+```{r}
+df_PE_correct$ID <- as.factor(df_PE_correct$ID)
+```
+
+```{r}
+fit_time_reg_word_response <- brm(bf(reg_word_count ~ 1 +  ar(time = time_since_grade_reveal_mins, gr = ID, p = 1), family = negbinomial()), data = df_by_resp_time)
+
+summary(fit_time_reg_word_response)
+```
+*** ar[1] (autoregressive coefficient) = 0.06: reg_word_count is weakly correlated with previous time_point. 95%CI include 0, indicating no significant relationships.
+*** sderr(standard deviation of the random effects for ar):
+estimate = 0.05, small variation in the autoregressive effect across subjects. 
+
+```{r}
+fit_time_reg_count_response <- brm(bf(reg_count ~ abs(PE_1)+(1|ID/exam_num) + ar(time = time_since_grade_reveal_mins, gr = ID:exam_num, p = 1), family = negbinomial()), data = df_by_resp_time_PE)
+
+summary(fit_time_reg_count_response)
+```
+```{r}
+plot(fit_time_reg_count_response, type = "acf")
+```
+
+### PE vs Reg_ratio, Response
+```{r}
+df_by_resp_time_PE$reg_ratio_tran <- (df_by_resp_time_PE$reg_ratio*(n-1)+0.5)/n
+b1_reg_ratio_response_PE <- brm(reg_ratio_tran ~ PE_2 + (1|ID) + (1|ResponseNumber) + (1|exam_num), data = df_by_resp_time_PE, family = zero_inflated_beta())
+
+summary(b1_reg_ratio_response_PE)
+```
+
+## Reg_ratio vs. GAD
+
+```{r}
+df_mood <- read.csv("/Users/runanwang/Desktop/A_Manetee_lab/Projects/Learning_emotion_regulation/Data/survey_data_f24/processed/premedEMA_exit_mood_final.csv")
+```
+
+```{r}
+df_by_exam_pe_gad <- inner_join(df_by_exam_pe, df_mood, by = "ID")
+```
+
+```{r}
+fit_reg_word_GAD <- lmer(reg_word_ratio ~ GAD_score + EVPE+ (1|ID) + (1|exam_num), data = df_by_exam_pe_gad)
+summary(fit_reg_word_GAD)
+```
+```{r}
+fit_reg_word_ERQ <- lmer(reg_ratio ~ ERQ_score + EVPE+ (1|ID) + (1|exam_num), data = df_by_exam_pe_gad)
+summary(fit_reg_word_ERQ)
+```
+```{r}
+fit_reg_word_PHQ <- lmer(reg_ratio ~ PHQ_score + EVPE+ (1|ID) + (1|exam_num), data = df_by_exam_pe_gad)
+summary(fit_reg_word_PHQ)
+```
+
+```{r}
+fit_reg_word_PQB <- lmer(reg_ratio ~ PQB_score + EVPE+ (1|ID) + (1|exam_num), data = df_by_exam_pe_gad)
+summary(fit_reg_word_PQB)
+```
+
+
